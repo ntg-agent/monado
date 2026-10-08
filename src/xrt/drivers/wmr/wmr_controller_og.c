@@ -475,8 +475,8 @@ wmr_controller_og_create(struct wmr_controller_connection *conn,
 	u_var_add_f32(wcb, &ctrl->last_inputs.trigger, "input.trigger");
 	u_var_add_u8(wcb, &ctrl->last_inputs.battery, "input.battery");
 	u_var_add_bool(wcb, &ctrl->last_inputs.thumbstick.click, "input.thumbstick.click");
-	u_var_add_f32(wcb, &ctrl->last_inputs.thumbstick.values.x, "input.thumbstick.values.y");
-	u_var_add_f32(wcb, &ctrl->last_inputs.thumbstick.values.y, "input.thumbstick.values.x");
+	u_var_add_f32(wcb, &ctrl->last_inputs.thumbstick.values.x, "input.thumbstick.values.x");
+	u_var_add_f32(wcb, &ctrl->last_inputs.thumbstick.values.y, "input.thumbstick.values.y");
 	u_var_add_bool(wcb, &ctrl->last_inputs.trackpad.click, "input.trackpad.click");
 	u_var_add_bool(wcb, &ctrl->last_inputs.trackpad.touch, "input.trackpad.touch");
 	u_var_add_f32(wcb, &ctrl->last_inputs.trackpad.values.x, "input.trackpad.values.x");
