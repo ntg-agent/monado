@@ -1102,8 +1102,17 @@ _update_projection_layer(struct xrt_compositor *xc,
 
 	struct xrt_swapchain *xcs[XRT_MAX_VIEWS] = {0};
 
+	if (data->view_count == 0 || data->view_count > XRT_MAX_VIEWS) {
+		U_LOG_E("Invalid view count %u for projection layer #%u!", data->view_count, i);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
 	for (uint32_t k = 0; k < data->view_count; k++) {
 		const uint32_t xsci = layer->swapchain_ids[k];
+		if (xsci >= IPC_MAX_CLIENT_SWAPCHAINS) {
+			U_LOG_E("Invalid swap chain id for projection layer #%u!", i);
+			return XRT_ERROR_IPC_FAILURE;
+		}
 		xcs[k] = ics->xscs[xsci];
 		if (xcs[k] == NULL) {
 			U_LOG_E("Invalid swap chain for projection layer!");
@@ -1134,9 +1143,19 @@ _update_projection_layer_depth(struct xrt_compositor *xc,
 	struct xrt_swapchain *xcs[XRT_MAX_VIEWS] = {0};
 	struct xrt_swapchain *d_xcs[XRT_MAX_VIEWS] = {0};
 
+	if (data->view_count == 0 || data->view_count > XRT_MAX_VIEWS) {
+		U_LOG_E("Invalid view count %u for projection layer #%u!", data->view_count, i);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
 	for (uint32_t j = 0; j < data->view_count; j++) {
 		const uint32_t xsci = layer->swapchain_ids[j];
 		const uint32_t d_xsci = layer->swapchain_ids[j + data->view_count];
+
+		if (xsci >= IPC_MAX_CLIENT_SWAPCHAINS || d_xsci >= IPC_MAX_CLIENT_SWAPCHAINS) {
+			U_LOG_E("Invalid swap chain id for projection layer #%u!", i);
+			return XRT_ERROR_IPC_FAILURE;
+		}
 
 		xcs[j] = ics->xscs[xsci];
 		d_xcs[j] = ics->xscs[d_xsci];
@@ -1167,6 +1186,11 @@ do_single(struct xrt_compositor *xc,
 	}
 
 	const uint32_t sci = layer->swapchain_ids[0];
+	if (sci >= IPC_MAX_CLIENT_SWAPCHAINS) {
+		U_LOG_E("Invalid swapchain id for layer #%u, '%s'!", i, name);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
 	struct xrt_swapchain *xcs = ics->xscs[sci];
 
 	if (xcs == NULL) {
@@ -1287,6 +1311,11 @@ _update_layers(volatile struct ipc_client_state *ics, struct ipc_layer_slot *slo
 
 	xrt_result_t xret = XRT_SUCCESS;
 
+	if (slot->layer_count > IPC_MAX_LAYERS) {
+		U_LOG_E("Invalid layer count %u!", slot->layer_count);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
 	for (uint32_t i = 0; i < slot->layer_count; i++) {
 		volatile struct ipc_layer_entry *layer = &slot->layers[i];
 
@@ -1340,8 +1369,18 @@ ipc_handle_compositor_layer_sync(volatile struct ipc_client_state *ics,
 {
 	IPC_TRACE_MARKER();
 
-	if (ics->xc == NULL) {
-		return XRT_ERROR_IPC_SESSION_NOT_CREATED;
+	if (ics->xc == NULL || slot_id >= IPC_MAX_SLOTS) {
+		if (slot_id >= IPC_MAX_SLOTS) {
+			IPC_ERROR(ics->server, "Invalid slot_id %u", slot_id);
+		}
+
+		// Not taking ownership, free all received handles.
+		for (uint32_t i = 0; i < handle_count; i++) {
+			xrt_graphics_sync_handle_t tmp = handles[i];
+			u_graphics_sync_unref(&tmp);
+		}
+
+		return ics->xc == NULL ? XRT_ERROR_IPC_SESSION_NOT_CREATED : XRT_ERROR_IPC_FAILURE;
 	}
 
 	xrt_graphics_sync_handle_t sync_handle = XRT_GRAPHICS_SYNC_HANDLE_INVALID;
@@ -1370,7 +1409,11 @@ ipc_handle_compositor_layer_sync(volatile struct ipc_client_state *ics,
 	xrt_comp_layer_begin(ics->xc, &slot.data);
 
 	xrt_result_t xret = _update_layers(ics, &slot);
-	IPC_CHK_AND_RET(ics->server, xret, "_update_layers");
+	if (xret != XRT_SUCCESS) {
+		IPC_ERROR(ics->server, "_update_layers failed: %u", xret);
+		u_graphics_sync_unref(&sync_handle);
+		return xret;
+	}
 
 	xrt_comp_layer_commit(ics->xc, sync_handle);
 
@@ -1411,6 +1454,11 @@ ipc_handle_compositor_layer_sync_with_semaphore(volatile struct ipc_client_state
 	}
 
 	struct xrt_compositor_semaphore *xcsem = ics->xcsems[semaphore_id];
+
+	if (slot_id >= IPC_MAX_SLOTS) {
+		IPC_ERROR(ics->server, "Invalid slot_id %u", slot_id);
+		return XRT_ERROR_IPC_FAILURE;
+	}
 
 	struct ipc_shared_memory *ism = get_ism(ics);
 
