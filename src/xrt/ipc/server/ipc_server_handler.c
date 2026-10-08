@@ -733,7 +733,7 @@ ipc_handle_space_locate_spaces(volatile struct ipc_client_state *ics,
 	uint32_t *space_ids = U_TYPED_ARRAY_CALLOC(uint32_t, space_count);
 
 	// we need to send back whether allocation succeeded so the client knows whether to send more data
-	if (space_ids == NULL) {
+	if (space_ids == NULL || xspaces == NULL || offsets == NULL || out_relations == NULL) {
 		xret = XRT_ERROR_ALLOCATION;
 	}
 
@@ -745,8 +745,8 @@ ipc_handle_space_locate_spaces(volatile struct ipc_client_state *ics,
 	}
 
 	// only after sending the allocation result can we skip to the end in the allocation error case
-	if (space_ids == NULL) {
-		IPC_ERROR(ics->server, "Failed to allocate space for receiving spaces ids");
+	if (space_ids == NULL || xspaces == NULL || offsets == NULL || out_relations == NULL) {
+		IPC_ERROR(ics->server, "Failed to allocate space for locating spaces");
 		xret = XRT_ERROR_ALLOCATION;
 		goto out_locate_spaces;
 	}
