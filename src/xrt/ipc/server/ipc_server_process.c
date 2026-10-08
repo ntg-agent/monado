@@ -1141,8 +1141,13 @@ ipc_server_handle_client_connected(struct ipc_server *vs, xrt_ipc_handle_t ipc_h
 	}
 
 	if (it->state != IPC_THREAD_READY) {
+		// The exiting thread still takes the global lock during its
+		// cleanup, so we must not hold it while joining. The slot stays
+		// ours, only this (the main) thread assigns client slots.
+		os_mutex_unlock(&vs->global_state.lock);
 		os_thread_join(&it->thread);
 		os_thread_destroy(&it->thread);
+		os_mutex_lock(&vs->global_state.lock);
 		it->state = IPC_THREAD_READY;
 	}
 
