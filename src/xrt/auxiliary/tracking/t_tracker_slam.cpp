@@ -773,8 +773,8 @@ flush_poses(TrackerSlam &t)
 
 		// Last relation
 		xrt_space_relation lr = XRT_SPACE_RELATION_ZERO;
-		int64_t lts;
-		t.slam_rels.get_latest(&lts, &lr);
+		int64_t lts = nts;
+		bool has_last = t.slam_rels.get_latest(&lts, &lr);
 		xrt_quat lrot = lr.pose.orientation;
 
 		double dt = time_ns_to_s(nts - lts);
@@ -787,7 +787,11 @@ flush_poses(TrackerSlam &t)
 		rel.relation_flags = XRT_SPACE_RELATION_BITMASK_ALL;
 		rel.pose = {nrot, npos};
 		rel.linear_velocity = nvel;
-		math_quat_finite_difference(&lrot, &nrot, dt, &rel.angular_velocity);
+		if (has_last && dt != 0) {
+			math_quat_finite_difference(&lrot, &nrot, dt, &rel.angular_velocity);
+		} else {
+			rel.angular_velocity = xrt_vec3{0.f, 0.f, 0.f};
+		}
 
 		// Push to relationship history unless we are debugging prediction
 		if (t.dbg_pred_counter % t.dbg_pred_every == 0) {
