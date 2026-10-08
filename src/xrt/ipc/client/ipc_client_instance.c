@@ -167,7 +167,7 @@ ipc_client_instance_create_system(struct xrt_instance *xinst,
 	// Query the server for the list of devices
 	struct ipc_device_list device_list = {0};
 	xret = ipc_call_system_devices_get_list(&ii->ipc_c, &device_list);
-	IPC_CHK_AND_RET(&ii->ipc_c, xret, "ipc_call_system_devices_get_list");
+	IPC_CHK_WITH_GOTO(&ii->ipc_c, xret, "ipc_call_system_devices_get_list", err_destroy);
 
 	// Create client devices for each device in the list
 	uint32_t count = 0;
