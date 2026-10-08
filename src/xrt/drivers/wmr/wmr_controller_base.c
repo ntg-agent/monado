@@ -139,8 +139,10 @@ receive_bytes(struct wmr_controller_base *wcb, uint64_t time_ns, uint8_t *buffer
 		os_mutex_lock(&wcb->data_lock);
 		// Send a timesync packet if needed
 		if (wcb->timesync_updated) {
-			wmr_controller_base_send_timesync(wcb);
+			/* Clear first: send_timesync drops data_lock, and a newer update
+			 * arriving in that window must keep its flag. */
 			wcb->timesync_updated = false;
+			wmr_controller_base_send_timesync(wcb);
 		}
 
 		wmr_controller_base_send_keepalive(wcb, time_ns);
