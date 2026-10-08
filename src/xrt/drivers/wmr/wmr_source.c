@@ -201,7 +201,6 @@ wmr_source_stream_stop(struct xrt_fs *xfs)
 	bool stopped = wmr_camera_stop(ws->camera);
 	if (!stopped) {
 		WMR_ERROR(ws, "Unable to stop WMR cameras");
-		WMR_ASSERT_(false);
 	}
 
 	return stopped;
@@ -240,7 +239,6 @@ wmr_source_stream_start(struct xrt_fs *xfs,
 	bool started = wmr_camera_start(ws->camera);
 	if (!started) {
 		WMR_ERROR(ws, "Unable to start WMR cameras");
-		WMR_ASSERT_(false);
 	}
 
 	ws->is_running = started;
