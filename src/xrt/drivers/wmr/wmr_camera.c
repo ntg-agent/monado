@@ -189,9 +189,19 @@ compute_frame_size(struct wmr_camera *cam)
 		WMR_CAM_DEBUG(cam, "Found head tracking camera index %d width %d height %d", i, config->roi.extent.w,
 		              config->roi.extent.h);
 
+		if (config->roi.extent.w < 32 || config->roi.extent.h <= 0) {
+			WMR_CAM_ERROR(cam, "Head tracking sensor %d has invalid size %dx%d", i, config->roi.extent.w,
+			              config->roi.extent.h);
+			return false;
+		}
+
 		if (cams_found == 0) {
 			width = config->roi.extent.w;
 			height = config->roi.extent.h;
+		} else if (config->roi.extent.w != cam->tcam_confs[0].roi.extent.w) {
+			WMR_CAM_ERROR(cam, "Head tracking sensors have mismatched widths - %d != %d. Please report",
+			              cam->tcam_confs[0].roi.extent.w, config->roi.extent.w);
+			return false;
 		} else if (height != config->roi.extent.h) {
 			WMR_CAM_ERROR(cam, "Head tracking sensors have mismatched heights - %u != %u. Please report",
 			              height, config->roi.extent.h);
