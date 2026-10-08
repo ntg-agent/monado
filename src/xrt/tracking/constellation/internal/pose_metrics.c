@@ -165,6 +165,9 @@ get_visible_leds_and_bounds(struct xrt_pose *pose,
 	struct t_constellation_led *leds = led_model->leds;
 	const int num_leds = led_model->num_leds;
 
+	/* Callers use the bounds even when no LEDs are visible */
+	*bounds = (struct pose_rect){0};
+
 	/* Project LEDs into the distorted image space */
 	if (!project_led_points(led_model, calib, pose, led_out_positions, led_out_points)) {
 		*num_visible_leds = 0;

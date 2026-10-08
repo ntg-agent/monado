@@ -96,6 +96,9 @@ draw_rgb_rect(uint8_t *pixels,
               uint32_t colour)
 {
 	clamp_rect(&start_x, &start_y, &box_width, &box_height, width, height);
+	if (box_width <= 0 || box_height <= 0) {
+		return; // Nothing to draw, and the bottom edge would be drawn above the start row
+	}
 
 	int x, y;
 	uint8_t *dest = pixels + stride * start_y + 3 * start_x;
@@ -243,7 +246,8 @@ debug_draw_blobs_leds(struct xrt_frame *rgb_out,
 			src += in_stride;
 		}
 		max_pix = MIN(64, max_pix); // HACK: Scale everything in the bottom 25% up
-		uint8_t delta = max_pix - min_pix;
+		// Avoid a zero or wrapped delta on uniform frames, or when min_pix > 64
+		int delta = MAX((int)max_pix - (int)min_pix, 1);
 		for (int i = 0; i < 256; i++) {
 			equalise_map[i] = CLAMP(((i - min_pix) * 255 + delta / 2) / delta, 0, 255);
 		}
@@ -308,7 +312,7 @@ debug_draw_blobs_leds(struct xrt_frame *rgb_out,
 			}
 
 #ifdef XRT_HAVE_OPENCV
-			cv::Scalar cvCol = cv::Scalar((c >> 24) & 0xff, (c >> 16) & 0xff, c & 0xff);
+			cv::Scalar cvCol = cv::Scalar((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
 
 			if (flags & DEBUG_DRAW_FLAG_BLOB_CIRCLE) {
 				cv::RotatedRect rect =
@@ -356,7 +360,7 @@ debug_draw_blobs_leds(struct xrt_frame *rgb_out,
 		math_quat_rotate_vec3(&dev_state->P_world_obj_prior.orientation, &gravity_vector, &dev_gravity_vector);
 		math_quat_rotate_vec3(&view->P_world_cam.orientation, &dev_gravity_vector, &dev_cam_gravity_vector);
 
-		cv::Scalar cvCol = cv::Scalar((dev_colour >> 24) & 0xff, (dev_colour >> 16) & 0xff, dev_colour & 0xff);
+		cv::Scalar cvCol = cv::Scalar((dev_colour >> 16) & 0xff, (dev_colour >> 8) & 0xff, dev_colour & 0xff);
 		cv::Point from(30 - 30 * dev_cam_gravity_vector.x, 46 - 30 * dev_cam_gravity_vector.y);
 		cv::Point to(30 + 30 * dev_cam_gravity_vector.x, 46 + 30 * dev_cam_gravity_vector.y);
 		cv::arrowedLine(rgbOutMat, from, to, cvCol);

@@ -281,8 +281,9 @@ correspondence_search_project_pose(struct correspondence_search *cs,
 		math_quat_decompose_swing_twist(&pose->orientation, &mi->gravity_vector, &pose_gravity_swing,
 		                                &pose_gravity_twist);
 
-		// Calculate the difference between the amount of gravity swing, ignoring axis
-		float pose_angle = fabs(acosf(pose_gravity_swing.w)) - fabs(acosf(mi->gravity_swing.w));
+		// Calculate the difference between the amount of gravity swing, ignoring axis.
+		// q and -q are the same rotation, so use |w|, and reject errors in either direction.
+		float pose_angle = fabsf(acosf(fabsf(pose_gravity_swing.w)) - acosf(fabsf(mi->gravity_swing.w)));
 		if (pose_angle > mi->gravity_tolerance_rad) {
 			DEBUG(
 			    "model %d failed pose match - orientation was not within tolerance (error %f deg > %f "
@@ -862,7 +863,10 @@ correspondence_search_find_one_pose(struct correspondence_search *cs,
 	if ((search_flags & (CS_FLAG_SHALLOW_SEARCH | CS_FLAG_DEEP_SEARCH)) == 0)
 		search_flags |= CS_FLAG_SHALLOW_SEARCH | CS_FLAG_DEEP_SEARCH;
 
-	struct cs_model_info mi;
+	struct cs_model_info mi = {0};
+
+	/* Returned on failure if no candidate pose was ever found */
+	mi.best_pose = *pose;
 
 	mi.id = model->id;
 	mi.model = model;

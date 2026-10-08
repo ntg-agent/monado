@@ -147,20 +147,28 @@ ransac_pnp_pose(struct xrt_pose *pose,
 	/* 3 pixel reprojection threshold */
 	float reprojectionError = 3.0 / calib->calib.fx;
 
-	cv::solvePnPRansac(list_points3d, list_points2d_undistorted, dummyK, dummyD, rvec, tvec, false, iterationsCount,
-	                   reprojectionError, confidence, inliers, flags);
+	bool found = cv::solvePnPRansac(list_points3d, list_points2d_undistorted, dummyK, dummyD, rvec, tvec, false,
+	                                iterationsCount, reprojectionError, confidence, inliers, flags);
 
 	if (num_inliers)
-		*num_inliers = inliers.rows;
+		*num_inliers = found ? inliers.rows : 0;
 
-	struct xrt_vec3 v;
+	/* On failure rvec/tvec still hold the prior, which must not be reported as a measured pose */
+	if (!found)
+		return false;
+
 	double angle = sqrt(rvec.dot(rvec));
-	double inorm = 1.0f / angle;
+	if (angle < 1e-12) {
+		pose->orientation = XRT_QUAT_IDENTITY;
+	} else {
+		struct xrt_vec3 v;
+		double inorm = 1.0 / angle;
 
-	v.x = rvec.at<double>(0) * inorm;
-	v.y = rvec.at<double>(1) * inorm;
-	v.z = rvec.at<double>(2) * inorm;
-	math_quat_from_angle_vector(angle, &v, &pose->orientation);
+		v.x = rvec.at<double>(0) * inorm;
+		v.y = rvec.at<double>(1) * inorm;
+		v.z = rvec.at<double>(2) * inorm;
+		math_quat_from_angle_vector(angle, &v, &pose->orientation);
+	}
 	pose->position.x = tvec.at<double>(0);
 	pose->position.y = tvec.at<double>(1);
 	pose->position.z = tvec.at<double>(2);
