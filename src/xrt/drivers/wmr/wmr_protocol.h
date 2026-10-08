@@ -53,7 +53,12 @@ extern "C" {
 #define WMR_CONTROLLER_STATUS_OFFLINE 0x1
 #define WMR_CONTROLLER_STATUS_ONLINE 0x2
 
-/* Messages we can send the G2 via WMR_MS_HOLOLENS_MSG_BT_CONTROL */
+/* Messages we can send the G2 / Odyssey+ via WMR_MS_HOLOLENS_MSG_BT_CONTROL.
+ *
+ * These are sent as 64 byte *feature* reports: {0x16, msg, controller_no, 0...}. The Odyssey+ firmware
+ * rejects them when sent as output reports ("ERROR: CommandSet st 0, cmd 0, reqCmd N" in the debug log).
+ * Replies arrive as WMR_MS_HOLOLENS_MSG_BT_CONTROL input reports: {0x16, msg, controller_no, ...}.
+ */
 enum wmr_bt_control_msg
 {
 	WMR_BT_CONTROL_MSG_ONLINE_STATUS = 0x04,
