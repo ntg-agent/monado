@@ -130,7 +130,7 @@ const int headset_map_n = sizeof(headset_map) / sizeof(headset_map[0]);
  *
  */
 
-static void
+static bool
 hololens_sensors_decode_packet(struct wmr_hmd *wh,
                                struct hololens_sensors_packet *pkt,
                                const unsigned char *buffer,
@@ -140,7 +140,7 @@ hololens_sensors_decode_packet(struct wmr_hmd *wh,
 
 	if (size != 497 && size != 381) {
 		WMR_ERROR(wh, "invalid hololens sensor packet size (expected 381 or 497 but got %d)", size);
-		return;
+		return false;
 	}
 
 	pkt->id = read8(&buffer);
@@ -171,6 +171,8 @@ hololens_sensors_decode_packet(struct wmr_hmd *wh,
 	for (int i = 0; i < 4; i++) {
 		pkt->video_timestamp[i] = read64(&buffer);
 	}
+
+	return true;
 }
 
 static void
@@ -381,7 +383,9 @@ hololens_handle_sensors_avg(struct wmr_hmd *wh, const unsigned char *buffer, int
 	// Get the timing as close to reading the packet as possible.
 	uint64_t now_ns = os_monotonic_get_ns();
 
-	hololens_sensors_decode_packet(wh, &wh->packet, buffer, size);
+	if (!hololens_sensors_decode_packet(wh, &wh->packet, buffer, size)) {
+		return;
+	}
 
 	// Use a single averaged sample from all the samples in the packet
 	struct xrt_vec3 avg_raw_accel = XRT_VEC3_ZERO;
@@ -427,7 +431,9 @@ hololens_handle_sensors_all(struct wmr_hmd *wh, const unsigned char *buffer, int
 	// Get the timing as close to reading the packet as possible.
 	uint64_t now_ns = os_monotonic_get_ns();
 
-	hololens_sensors_decode_packet(wh, &wh->packet, buffer, size);
+	if (!hololens_sensors_decode_packet(wh, &wh->packet, buffer, size)) {
+		return;
+	}
 
 	struct xrt_vec3 raw_gyro[IMU_SAMPLES_PER_PACKET];
 	struct xrt_vec3 raw_accel[IMU_SAMPLES_PER_PACKET];
