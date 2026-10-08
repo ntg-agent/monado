@@ -171,6 +171,8 @@ ipc_client_instance_create_system(struct xrt_instance *xinst,
 
 	// Create client devices for each device in the list
 	uint32_t count = 0;
+	// Maps server device ids (as used by roles) to created client devices.
+	struct xrt_device *id_to_xdev[XRT_SYSTEM_MAX_DEVICES] = {0};
 	struct ipc_client_tracking_origin_manager *ictom = &icsd->tracking_origin_manager;
 	for (uint32_t i = 0; i < device_list.device_count; i++) {
 		struct ipc_device_list_entry *entry = &device_list.devices[i];
@@ -184,6 +186,9 @@ ipc_client_instance_create_system(struct xrt_instance *xinst,
 
 		// Check if device creation succeeded
 		if (xsysd->static_xdevs[count] != NULL) {
+			if (entry->id < XRT_SYSTEM_MAX_DEVICES) {
+				id_to_xdev[entry->id] = xsysd->static_xdevs[count];
+			}
 			count++;
 		} else {
 			IPC_ERROR(&ii->ipc_c, "Failed to create device %u", i);
@@ -194,7 +199,7 @@ ipc_client_instance_create_system(struct xrt_instance *xinst,
 #define SET_ROLE(ROLE)                                                                                                 \
 	do {                                                                                                           \
 		int32_t index = ii->ipc_c.ism->roles.ROLE;                                                             \
-		xsysd->static_roles.ROLE = index >= 0 ? xsysd->static_xdevs[index] : NULL;                             \
+		xsysd->static_roles.ROLE = (index >= 0 && index < XRT_SYSTEM_MAX_DEVICES) ? id_to_xdev[index] : NULL;  \
 	} while (false)
 
 	SET_ROLE(head);
