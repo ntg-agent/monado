@@ -1120,6 +1120,7 @@ ipc_server_handle_client_connected(struct ipc_server *vs, xrt_ipc_handle_t ipc_h
 	}
 	if (ics == NULL) {
 		xrt_ipc_handle_close(ipc_handle);
+		vs->global_state.connected_client_count--;
 
 		// Unlock when we are done.
 		os_mutex_unlock(&vs->global_state.lock);
@@ -1132,6 +1133,7 @@ ipc_server_handle_client_connected(struct ipc_server *vs, xrt_ipc_handle_t ipc_h
 	if (it->state != IPC_THREAD_READY && it->state != IPC_THREAD_STOPPING) {
 		// we should not get here
 		xrt_ipc_handle_close(ipc_handle);
+		vs->global_state.connected_client_count--;
 
 		// Unlock when we are done.
 		os_mutex_unlock(&vs->global_state.lock);
@@ -1168,6 +1170,12 @@ ipc_server_handle_client_connected(struct ipc_server *vs, xrt_ipc_handle_t ipc_h
 
 	xrt_result_t xret = init_shm_and_instance_state(vs, ics);
 	if (xret != XRT_SUCCESS) {
+		// No thread will be started, release the slot and the client.
+		xrt_ipc_handle_close(ipc_handle);
+		ics->imc.ipc_handle = XRT_IPC_HANDLE_INVALID;
+		ics->server_thread_index = -1;
+		it->state = IPC_THREAD_READY;
+		vs->global_state.connected_client_count--;
 
 		// Unlock when we are done.
 		os_mutex_unlock(&vs->global_state.lock);

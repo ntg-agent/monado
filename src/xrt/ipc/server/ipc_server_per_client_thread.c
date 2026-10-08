@@ -236,6 +236,7 @@ setup_epoll(volatile struct ipc_client_state *ics)
 	ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_socket, &ev);
 	if (ret < 0) {
 		IPC_ERROR(ics->server, "Error epoll_ctl(listen_socket) failed '%i'.", ret);
+		close(epoll_fd);
 		return ret;
 	}
 
@@ -256,6 +257,13 @@ client_loop(volatile struct ipc_client_state *ics)
 	// Claim the client fd.
 	int epoll_fd = setup_epoll(ics);
 	if (epoll_fd < 0) {
+		// Call the client disconnected callback to pair with connected.
+		ics->server->callbacks->client_disconnected( //
+		    ics->server,                             //
+		    ics->client_state.id,                    //
+		    ics->server->callback_data);             //
+
+		common_shutdown(ics);
 		return;
 	}
 
