@@ -1699,6 +1699,11 @@ ipc_handle_compositor_semaphore_destroy(volatile struct ipc_client_state *ics, u
 		return XRT_ERROR_IPC_SESSION_NOT_CREATED;
 	}
 
+	if (id >= IPC_MAX_CLIENT_SEMAPHORES) {
+		IPC_ERROR(ics->server, "Invalid semaphore id %u", id);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
 	if (ics->xcsems[id] == NULL) {
 		IPC_ERROR(ics->server, "Client tried to delete non-existent compositor semaphore!");
 		return XRT_ERROR_IPC_FAILURE;

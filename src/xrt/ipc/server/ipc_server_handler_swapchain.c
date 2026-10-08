@@ -205,6 +205,11 @@ ipc_handle_swapchain_wait_image(volatile struct ipc_client_state *ics, uint32_t 
 		return XRT_ERROR_IPC_SESSION_NOT_CREATED;
 	}
 
+	if (id >= IPC_MAX_CLIENT_SWAPCHAINS || ics->xscs[id] == NULL) {
+		IPC_ERROR(ics->server, "Invalid swapchain id %u", id);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
 	//! @todo Look up the index.
 	uint32_t sc_index = id;
 	struct xrt_swapchain *xsc = ics->xscs[sc_index];
@@ -217,6 +222,11 @@ ipc_handle_swapchain_acquire_image(volatile struct ipc_client_state *ics, uint32
 {
 	if (ics->xc == NULL) {
 		return XRT_ERROR_IPC_SESSION_NOT_CREATED;
+	}
+
+	if (id >= IPC_MAX_CLIENT_SWAPCHAINS || ics->xscs[id] == NULL) {
+		IPC_ERROR(ics->server, "Invalid swapchain id %u", id);
+		return XRT_ERROR_IPC_FAILURE;
 	}
 
 	//! @todo Look up the index.
@@ -235,6 +245,11 @@ ipc_handle_swapchain_release_image(volatile struct ipc_client_state *ics, uint32
 		return XRT_ERROR_IPC_SESSION_NOT_CREATED;
 	}
 
+	if (id >= IPC_MAX_CLIENT_SWAPCHAINS || ics->xscs[id] == NULL) {
+		IPC_ERROR(ics->server, "Invalid swapchain id %u", id);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
 	//! @todo Look up the index.
 	uint32_t sc_index = id;
 	struct xrt_swapchain *xsc = ics->xscs[sc_index];
@@ -249,6 +264,11 @@ ipc_handle_swapchain_destroy(volatile struct ipc_client_state *ics, uint32_t id)
 {
 	if (ics->xc == NULL) {
 		return XRT_ERROR_IPC_SESSION_NOT_CREATED;
+	}
+
+	if (id >= IPC_MAX_CLIENT_SWAPCHAINS || ics->xscs[id] == NULL) {
+		IPC_ERROR(ics->server, "Invalid swapchain id %u", id);
+		return XRT_ERROR_IPC_FAILURE;
 	}
 
 	ics->swapchain_count--;
