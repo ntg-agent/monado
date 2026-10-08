@@ -78,12 +78,17 @@ is_rect_neg(const XrRect2Di *imageRect)
 static XrResult
 is_rect_out_of_bounds(const XrRect2Di *imageRect, struct oxr_swapchain *sc)
 {
-	uint32_t total_width = imageRect->offset.x + imageRect->extent.width;
-	if (total_width > sc->width) {
+	// Negative extents would wrap in unsigned math, do it signed and 64-bit.
+	if (imageRect->extent.width < 0 || imageRect->extent.height < 0) {
 		return true;
 	}
-	uint32_t total_height = imageRect->offset.y + imageRect->extent.height;
-	if (total_height > sc->height) {
+
+	int64_t total_width = (int64_t)imageRect->offset.x + imageRect->extent.width;
+	if (total_width > (int64_t)sc->width) {
+		return true;
+	}
+	int64_t total_height = (int64_t)imageRect->offset.y + imageRect->extent.height;
+	if (total_height > (int64_t)sc->height) {
 		return true;
 	}
 
