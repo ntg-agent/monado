@@ -76,6 +76,8 @@ DEBUG_GET_ONCE_NUM_OPTION(sleep_seconds, "WMR_DISPLAY_INIT_SLEEP_SECONDS", 4)
 
 //! Specifies whether the user wants to use the hand tracker.
 DEBUG_GET_ONCE_BOOL_OPTION(wmr_handtracking, "WMR_HANDTRACKING", true)
+// Pair a controller to the HMD radio at startup (Reverb G2, Odyssey+): "left" or "right"
+DEBUG_GET_ONCE_OPTION(wmr_pair_controller, "WMR_PAIR_CONTROLLER", NULL)
 
 #ifdef XRT_FEATURE_SLAM
 //! Whether to submit samples to the SLAM tracker from the start.
@@ -102,6 +104,32 @@ static void
 wmr_hmd_deactivate_odyssey_plus(struct wmr_hmd *wh);
 static void
 wmr_hmd_screen_enable_odyssey_plus(struct wmr_hmd *wh, bool enable);
+//! Steps of pairing a controller, see wmr_hmd::pairing
+enum wmr_pairing_phase
+{
+	WMR_PAIRING_PHASE_QUERY_OTHER = 0,  //!< Read the other controller's slot state
+	WMR_PAIRING_PHASE_QUERY = 1,        //!< Read this slot's state
+	WMR_PAIRING_PHASE_UNPAIR_OTHER = 2, //!< Unpair the other controller's slot
+	WMR_PAIRING_PHASE_UNPAIR = 3,       //!< Unpair this slot
+	WMR_PAIRING_PHASE_PAIR = 4,         //!< Pair this slot
+};
+
+//! The controller slot the current pairing step talks to.
+static inline int
+wmr_pairing_step_slot(int controller_no, int phase)
+{
+	bool other = phase == WMR_PAIRING_PHASE_QUERY_OTHER || phase == WMR_PAIRING_PHASE_UNPAIR_OTHER;
+	return other ? 1 - controller_no : controller_no;
+}
+
+static bool
+wmr_hmd_send_bt_control(struct wmr_hmd *wh, uint8_t msg, uint8_t controller_no);
+static void
+wmr_hmd_pairing_tick(struct wmr_hmd *wh);
+static void
+wmr_hmd_pair_left_btn_cb(void *wh_ptr);
+static void
+wmr_hmd_pair_right_btn_cb(void *wh_ptr);
 
 const struct wmr_headset_descriptor headset_map[] = {
     {WMR_HEADSET_GENERIC, NULL, "Unknown WMR HMD", NULL, NULL, NULL}, /* Catch-all for unknown headsets */
@@ -281,6 +309,9 @@ hololens_handle_controller_status_packet(struct wmr_hmd *wh, const unsigned char
 	}
 
 	os_mutex_lock(&wh->controller_status_lock);
+	if (controller_id < WMR_MAX_CONTROLLERS) {
+		wh->controller_status[controller_id] = pkt_type;
+	}
 	if (controller_id == 0)
 		wh->have_left_controller_status = true;
 	else if (controller_id == 1)
@@ -323,6 +354,23 @@ hololens_handle_bt_iface_packet(struct wmr_hmd *wh, const unsigned char *buffer,
 	}
 
 	WMR_DEBUG(wh, "BT debug: tag %d: %.*s", tag, msg_len, buffer);
+
+	/* While pairing, note which controllers the radio's search finds. This is only reported in the
+	 * radio's debug log ("Found by address: Motion Controller - Left"), and lets us tell the user
+	 * if the wrong controller is in pairing mode. */
+	char text[64];
+	(void)snprintf(text, sizeof(text), "%.*s", msg_len, buffer);
+	if (strstr(text, "Found by address") != NULL) {
+		os_mutex_lock(&wh->controller_status_lock);
+		if (wh->pairing.controller_no >= 0) {
+			if (strstr(text, "Controller - Left") != NULL) {
+				wh->pairing.found[0] = true;
+			} else if (strstr(text, "Controller - Right") != NULL) {
+				wh->pairing.found[1] = true;
+			}
+		}
+		os_mutex_unlock(&wh->controller_status_lock);
+	}
 }
 
 static void
@@ -347,6 +395,234 @@ hololens_handle_controller_packet(struct wmr_hmd *wh, const unsigned char *buffe
 
 	uint64_t now_ns = os_monotonic_get_ns();
 	wmr_controller_connection_receive_bytes(controller, now_ns, (uint8_t *)buffer, size);
+}
+
+static const char *
+wmr_controller_side(int controller_no)
+{
+	return controller_no == 0 ? "left" : "right";
+}
+
+//! Stop pairing, showing @p gui_status in the debug UI. Call with controller_status_lock held.
+static void
+wmr_hmd_pairing_stop(struct wmr_hmd *wh, const char *gui_status)
+{
+	wh->pairing.controller_no = -1;
+	(void)snprintf(wh->gui.pairing_status, sizeof(wh->gui.pairing_status), "%s", gui_status);
+}
+
+/*!
+ * Handle the radio state of a controller slot while pairing: decide whether to unpair first.
+ * Call with controller_status_lock held.
+ */
+static void
+wmr_hmd_pairing_slot_state(struct wmr_hmd *wh, int controller_no, bool occupied)
+{
+	int pairing_no = wh->pairing.controller_no;
+
+	if (wh->pairing.phase == WMR_PAIRING_PHASE_QUERY_OTHER && controller_no == 1 - pairing_no) {
+		/* A connected controller's bond is evidently fine and is kept. Otherwise its bond may
+		 * already be gone (see below), so it gets unpaired and paired again too. */
+		wh->pairing.other_occupied =
+		    occupied && wh->controller_status[controller_no] != WMR_CONTROLLER_STATUS_ONLINE;
+		wh->pairing.phase = WMR_PAIRING_PHASE_QUERY;
+		wh->pairing.pending_msg = WMR_BT_CONTROL_MSG_PAIRING_STATUS;
+		return;
+	}
+
+	if (wh->pairing.phase != WMR_PAIRING_PHASE_QUERY || controller_no != pairing_no) {
+		return;
+	}
+
+	wh->pairing.status = -1;
+
+	if (!occupied && !wh->pairing.other_occupied) {
+		wh->pairing.phase = WMR_PAIRING_PHASE_PAIR;
+		wh->pairing.pending_msg = WMR_BT_CONTROL_MSG_PAIR;
+		return;
+	}
+
+	/* An occupied slot must be unpaired before it can be paired again (Windows does the same).
+	 * On the Odyssey+, any unpair - including the HMD's own when a paired controller is put in
+	 * pairing mode - also deletes the radio's stored bond for the other controller ("NVRAM
+	 * delete"), which then can't reconnect. So unpair both slots, leaving the radio's bond
+	 * storage empty, then pair both controllers: pairing into an empty slot removes nothing. */
+	WMR_WARN(wh,
+	         "Pairing a controller removes the pairing of BOTH controllers on this headset: "
+	         "unpairing both, then pairing this one, then the %s one.",
+	         wmr_controller_side(1 - controller_no));
+	wh->pairing.phase = WMR_PAIRING_PHASE_UNPAIR_OTHER;
+	wh->pairing.pending_msg = WMR_BT_CONTROL_MSG_UNPAIR;
+}
+
+//! Handle the command status while unpairing. Call with controller_status_lock held.
+static void
+wmr_hmd_pairing_unpair_status(struct wmr_hmd *wh, int controller_no, uint8_t status)
+{
+	if (status == WMR_BT_PAIRING_STATUS_UNPAIR_FAILED) {
+		WMR_WARN(wh, "Unpairing controller %d failed (status %u). Wait a few seconds and try again.",
+		         controller_no, status);
+		wmr_hmd_pairing_stop(wh, "Unpairing failed, wait a few seconds and try again");
+		return;
+	}
+	if (status != WMR_BT_PAIRING_STATUS_IDLE) {
+		return; // Still unpairing
+	}
+
+	WMR_INFO(wh, "Controller %d unpaired", controller_no);
+	wh->pairing.status = -1;
+	if (wh->pairing.phase == WMR_PAIRING_PHASE_UNPAIR_OTHER) {
+		wh->pairing.phase = WMR_PAIRING_PHASE_UNPAIR;
+		wh->pairing.pending_msg = WMR_BT_CONTROL_MSG_UNPAIR;
+	} else {
+		wh->pairing.phase = WMR_PAIRING_PHASE_PAIR;
+		wh->pairing.pending_msg = WMR_BT_CONTROL_MSG_PAIR;
+	}
+}
+
+//! Continue pairing with the other controller, into its now empty slot. Call with controller_status_lock held.
+static void
+wmr_hmd_pairing_continue_with_other(struct wmr_hmd *wh, int controller_no)
+{
+	int other_no = 1 - controller_no;
+	const char *other = wmr_controller_side(other_no);
+
+	/* Pairing it in a separate run would see this slot occupied and unpair it again */
+	WMR_INFO(wh,
+	         "The %s controller is paired. Now put the %s controller in pairing mode "
+	         "(hold the button under its battery cover until the LEDs pulse).",
+	         wmr_controller_side(controller_no), other);
+	(void)snprintf(wh->gui.pairing_status, sizeof(wh->gui.pairing_status),
+	               "Now put the %s controller in pairing mode", other);
+
+	int64_t now_ns = os_monotonic_get_ns();
+	wh->pairing.controller_no = other_no;
+	wh->pairing.other_occupied = false;
+	wh->pairing.found[0] = wh->pairing.found[1] = false;
+	wh->pairing.status = -1;
+	wh->pairing.phase = WMR_PAIRING_PHASE_PAIR;
+	wh->pairing.pending_msg = WMR_BT_CONTROL_MSG_PAIR;
+	wh->pairing.next_poll_ns = now_ns + 500 * U_TIME_1MS_IN_NS;
+	wh->pairing.deadline_ns = now_ns + 60 * (int64_t)U_TIME_1S_IN_NS;
+}
+
+//! Handle the controller not being found by a pairing search. Call with controller_status_lock held.
+static void
+wmr_hmd_pairing_not_found(struct wmr_hmd *wh, int controller_no)
+{
+	const char *side = wmr_controller_side(controller_no);
+	const char *other = wmr_controller_side(1 - controller_no);
+
+	if (os_monotonic_get_ns() + 8 * (int64_t)U_TIME_1S_IN_NS < wh->pairing.deadline_ns) {
+		/* The radio only searches for ~6s per request: keep searching until the deadline */
+		WMR_DEBUG(wh, "No %s controller found yet, searching again", side);
+		wh->pairing.status = -1;
+		wh->pairing.pending_msg = WMR_BT_CONTROL_MSG_PAIR;
+		return;
+	}
+
+	if (wh->pairing.found[1 - controller_no]) {
+		WMR_WARN(wh,
+		         "Pairing failed: the %s controller was found in pairing mode, not the %s one. Turn the "
+		         "%s controller off (remove a battery), put the %s controller in pairing mode (hold the "
+		         "button under its battery cover until the LEDs pulse) and try again.",
+		         other, side, other, side);
+		(void)snprintf(wh->gui.pairing_status, sizeof(wh->gui.pairing_status),
+		               "Found the %s controller instead: turn it off, retry with the %s one", other, side);
+	} else {
+		WMR_WARN(wh,
+		         "Pairing failed: no %s controller in pairing mode was found. Check its batteries, hold the "
+		         "button under its battery cover until the LEDs pulse, keep it near the headset and try "
+		         "again.",
+		         side);
+		(void)snprintf(wh->gui.pairing_status, sizeof(wh->gui.pairing_status),
+		               "No %s controller in pairing mode found, try again", side);
+	}
+	wh->pairing.controller_no = -1;
+}
+
+//! Handle the command status while pairing. Call with controller_status_lock held.
+static void
+wmr_hmd_pairing_pair_status(struct wmr_hmd *wh, int controller_no, uint8_t status)
+{
+	if (wh->pairing.status == status) {
+		return;
+	}
+	wh->pairing.status = status;
+	WMR_INFO(wh, "Controller %d pairing status: %u", controller_no, status);
+
+	switch (status) {
+	case WMR_BT_PAIRING_STATUS_CONNECTED:
+		if (wh->pairing.other_occupied) {
+			wmr_hmd_pairing_continue_with_other(wh, controller_no);
+			break;
+		}
+		WMR_INFO(wh, "The %s controller is paired and connected. Restart Monado to use it.",
+		         wmr_controller_side(controller_no));
+		wmr_hmd_pairing_stop(wh, "Controller paired, restart to use it");
+		break;
+	case WMR_BT_PAIRING_STATUS_NOT_FOUND: wmr_hmd_pairing_not_found(wh, controller_no); break;
+	case WMR_BT_PAIRING_STATUS_REFUSED:
+		WMR_WARN(wh, "The HMD refused to pair the %s controller (pairing status %u)",
+		         wmr_controller_side(controller_no), status);
+		wmr_hmd_pairing_stop(wh, "The HMD refused to pair the controller");
+		break;
+	default: break;
+	}
+}
+
+static void
+hololens_handle_bt_control_packet(struct wmr_hmd *wh, const unsigned char *buffer, int size)
+{
+	DRV_TRACE_MARKER();
+
+	if (size < 4) {
+		WMR_DEBUG(wh, "Short BT control packet (%d)", size);
+		return;
+	}
+
+	uint8_t msg = buffer[1];
+	int controller_no = buffer[2];
+
+	switch (msg) {
+	case WMR_BT_CONTROL_MSG_PAIRING_STATUS: {
+		if (size < 15) {
+			break;
+		}
+		WMR_DEBUG(wh, "Controller %d radio state: address %02x:%02x:%02x:%02x:%02x:%02x VID 0x%04x PID 0x%04x",
+		          controller_no, buffer[3], buffer[4], buffer[5], buffer[6], buffer[7], buffer[8],
+		          buffer[11] | buffer[12] << 8, buffer[13] | buffer[14] << 8);
+
+		bool occupied = false;
+		for (int i = 3; i < 9; i++) {
+			occupied |= buffer[i] != 0;
+		}
+
+		os_mutex_lock(&wh->controller_status_lock);
+		if (wh->pairing.controller_no >= 0) {
+			wmr_hmd_pairing_slot_state(wh, controller_no, occupied);
+		}
+		os_mutex_unlock(&wh->controller_status_lock);
+		break;
+	}
+	case WMR_BT_CONTROL_MSG_CMD_STATUS: {
+		uint8_t status = buffer[3];
+
+		os_mutex_lock(&wh->controller_status_lock);
+		int phase = wh->pairing.phase;
+		/* Ignore replies for other slots, or to polls sent before the current step's command */
+		bool for_this_step = wh->pairing.controller_no >= 0 && wh->pairing.pending_msg == 0 &&
+		                     controller_no == wmr_pairing_step_slot(wh->pairing.controller_no, phase);
+		if (for_this_step && (phase == WMR_PAIRING_PHASE_UNPAIR_OTHER || phase == WMR_PAIRING_PHASE_UNPAIR)) {
+			wmr_hmd_pairing_unpair_status(wh, controller_no, status);
+		} else if (for_this_step && phase == WMR_PAIRING_PHASE_PAIR) {
+			wmr_hmd_pairing_pair_status(wh, controller_no, status);
+		}
+		os_mutex_unlock(&wh->controller_status_lock);
+		break;
+	}
+	default: WMR_DEBUG(wh, "BT control reply (%d) msg 0x%02x controller %d", size, msg, controller_no); break;
+	}
 }
 
 static void
@@ -521,6 +797,9 @@ hololens_sensors_read_packets(struct wmr_hmd *wh)
 	case WMR_MS_HOLOLENS_MSG_CONTROLLER_STATUS: //
 		hololens_handle_controller_status_packet(wh, buffer, size);
 		break;
+	case WMR_MS_HOLOLENS_MSG_BT_CONTROL: //
+		hololens_handle_bt_control_packet(wh, buffer, size);
+		break;
 	case WMR_MS_HOLOLENS_MSG_CONTROL: //
 		hololens_handle_control(wh, buffer, size);
 		break;
@@ -679,6 +958,9 @@ wmr_run_thread(void *ptr)
 		if (!hololens_sensors_read_packets(wh)) {
 			break;
 		}
+
+		wmr_hmd_pairing_tick(wh);
+
 		os_thread_helper_lock(&wh->oth);
 	}
 	os_thread_helper_unlock(&wh->oth);
@@ -1648,6 +1930,17 @@ wmr_hmd_setup_ui(struct wmr_hmd *wh)
 		u_var_add_button(wh, &wh->gui.hmd_screen_enable_btn, "HMD Screen [On/Off]");
 	}
 
+	if (wh->hmd_desc->hmd_type == WMR_HEADSET_REVERB_G2 || wh->hmd_desc->hmd_type == WMR_HEADSET_SAMSUNG_800ZAA) {
+		u_var_add_gui_header(wh, NULL, "Controller pairing");
+		wh->gui.pair_left_btn.cb = wmr_hmd_pair_left_btn_cb;
+		wh->gui.pair_left_btn.ptr = wh;
+		u_var_add_button(wh, &wh->gui.pair_left_btn, "Pair left controller");
+		wh->gui.pair_right_btn.cb = wmr_hmd_pair_right_btn_cb;
+		wh->gui.pair_right_btn.ptr = wh;
+		u_var_add_button(wh, &wh->gui.pair_right_btn, "Pair right controller");
+		u_var_add_ro_text(wh, wh->gui.pairing_status, "Pairing status");
+	}
+
 	u_var_add_gui_header(wh, NULL, "Misc");
 	u_var_add_log_level(wh, &wh->log_level, "log_level");
 }
@@ -1793,6 +2086,96 @@ wmr_hmd_request_controller_status(struct wmr_hmd *wh, int controller_no)
 	return wmr_hmd_send_bt_control(wh, WMR_BT_CONTROL_MSG_ONLINE_STATUS, controller_no);
 }
 
+/*!
+ * Start pairing a controller in pairing mode to the HMD radio, replacing any controller
+ * already paired in that slot. Progress is polled from the reader thread.
+ */
+static void
+wmr_hmd_start_controller_pairing(struct wmr_hmd *wh, int controller_no)
+{
+	const char *side = controller_no == 0 ? "left" : "right";
+
+	os_mutex_lock(&wh->controller_status_lock);
+	if (wh->pairing.controller_no >= 0) {
+		os_mutex_unlock(&wh->controller_status_lock);
+		WMR_WARN(wh, "Already pairing controller %d", wh->pairing.controller_no);
+		return;
+	}
+	int64_t now_ns = os_monotonic_get_ns();
+	wh->pairing.controller_no = controller_no;
+	wh->pairing.phase = WMR_PAIRING_PHASE_QUERY_OTHER;
+	wh->pairing.pending_msg = WMR_BT_CONTROL_MSG_PAIRING_STATUS; // Sent by the reader thread
+	wh->pairing.status = -1;
+	wh->pairing.other_occupied = false;
+	wh->pairing.found[0] = wh->pairing.found[1] = false;
+	wh->pairing.next_poll_ns = now_ns > wh->pairing.not_before_ns ? now_ns : wh->pairing.not_before_ns;
+	wh->pairing.deadline_ns = wh->pairing.next_poll_ns + 60 * (int64_t)U_TIME_1S_IN_NS;
+	(void)snprintf(wh->gui.pairing_status, sizeof(wh->gui.pairing_status),
+	               "Pairing %s controller: hold its pairing button until the LEDs pulse", side);
+	os_mutex_unlock(&wh->controller_status_lock);
+
+	WMR_INFO(wh, "Pairing the %s controller. Put it in pairing mode (hold the button under the battery cover).",
+	         side);
+}
+
+static void
+wmr_hmd_pair_left_btn_cb(void *wh_ptr)
+{
+	wmr_hmd_start_controller_pairing((struct wmr_hmd *)wh_ptr, 0);
+}
+
+static void
+wmr_hmd_pair_right_btn_cb(void *wh_ptr)
+{
+	wmr_hmd_start_controller_pairing((struct wmr_hmd *)wh_ptr, 1);
+}
+
+/*!
+ * Called from the reader thread: poll the pairing status while pairing is in progress.
+ */
+static void
+wmr_hmd_pairing_tick(struct wmr_hmd *wh)
+{
+	os_mutex_lock(&wh->controller_status_lock);
+	int controller_no = wh->pairing.controller_no;
+	if (controller_no < 0) {
+		os_mutex_unlock(&wh->controller_status_lock);
+		return;
+	}
+
+	int64_t now_ns = os_monotonic_get_ns();
+	if (now_ns > wh->pairing.deadline_ns) {
+		WMR_WARN(wh, "Timed out pairing controller %d (last pairing status %d)", controller_no,
+		         wh->pairing.status);
+		(void)snprintf(wh->gui.pairing_status, sizeof(wh->gui.pairing_status), "Pairing timed out");
+		wh->pairing.controller_no = -1;
+		os_mutex_unlock(&wh->controller_status_lock);
+		return;
+	}
+
+	uint8_t msg = 0;
+	int slot = wmr_pairing_step_slot(controller_no, wh->pairing.phase);
+	if (now_ns < wh->pairing.next_poll_ns) {
+		// Not yet: waiting for the HMD to settle, or for the next poll
+	} else if (wh->pairing.pending_msg != 0) {
+		msg = wh->pairing.pending_msg;
+		wh->pairing.pending_msg = 0;
+	} else {
+		// Re-request the slot state until it arrives, then poll the command status
+		bool query =
+		    wh->pairing.phase == WMR_PAIRING_PHASE_QUERY_OTHER || wh->pairing.phase == WMR_PAIRING_PHASE_QUERY;
+		msg = query ? WMR_BT_CONTROL_MSG_PAIRING_STATUS : WMR_BT_CONTROL_MSG_CMD_STATUS;
+	}
+	if (msg != 0) {
+		wh->pairing.next_poll_ns = now_ns + 500 * U_TIME_1MS_IN_NS;
+	}
+	os_mutex_unlock(&wh->controller_status_lock);
+
+	if (msg != 0) {
+		wmr_hmd_send_bt_control(wh, msg, (uint8_t)slot);
+	}
+}
+
 static xrt_result_t
 compute_distortion_wmr(struct xrt_device *xdev, uint32_t view, float u, float v, struct xrt_uv_triplet *out_result)
 {
@@ -1893,6 +2276,11 @@ wmr_hmd_create(enum wmr_headset_type hmd_type,
 		wh = NULL;
 		return;
 	}
+	wh->pairing.controller_no = -1; // Not pairing
+	/* Unpairing erases the HMD's flash, which fails while it is starting the cameras and IMU after
+	 * activation ("SPI acq failed", "erase MC flash ERR = 67"), so hold off pairing commands until
+	 * it has settled. Windows only sends them well after startup. */
+	wh->pairing.not_before_ns = os_monotonic_get_ns() + 15 * (int64_t)U_TIME_1S_IN_NS;
 
 	ret = os_cond_init(&wh->controller_status_cond);
 	if (ret != 0) {
@@ -2061,6 +2449,20 @@ wmr_hmd_create(enum wmr_headset_type hmd_type,
 	}
 
 	wmr_hmd_setup_ui(wh);
+
+	const char *pair_controller = debug_get_option_wmr_pair_controller();
+	if (pair_controller != NULL) {
+		if (wh->hmd_desc->hmd_type != WMR_HEADSET_REVERB_G2 &&
+		    wh->hmd_desc->hmd_type != WMR_HEADSET_SAMSUNG_800ZAA) {
+			WMR_WARN(wh, "WMR_PAIR_CONTROLLER: this headset has no built-in controller radio");
+		} else if (strcmp(pair_controller, "left") == 0) {
+			wmr_hmd_start_controller_pairing(wh, 0);
+		} else if (strcmp(pair_controller, "right") == 0) {
+			wmr_hmd_start_controller_pairing(wh, 1);
+		} else {
+			WMR_WARN(wh, "WMR_PAIR_CONTROLLER must be 'left' or 'right', not '%s'", pair_controller);
+		}
+	}
 
 	*out_hmd = &wh->base;
 	*out_handtracker = hand_device;
