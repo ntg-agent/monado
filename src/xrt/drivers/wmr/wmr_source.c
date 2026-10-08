@@ -132,9 +132,9 @@ void (*receive_cam[XRT_TRACKING_MAX_CAMS])(struct xrt_frame_sink *,
 			/* old samples when the device has not been cleanly shut down. */                              \
 			if (ws->last_imu_ns > ts) {                                                                    \
 				WMR_WARN(ws,                                                                           \
-				         "Received sample from the past, new: %" PRIu64 ", last: %" PRIu64             \
-				         ", diff: %" PRIu64,                                                           \
-				         ts, s->timestamp_ns, ts - s->timestamp_ns);                                   \
+				         "Received sample from the past, new: %" PRId64 ", last: %" PRId64             \
+				         ", diff: %" PRId64,                                                           \
+				         ts, ws->last_imu_ns, ws->last_imu_ns - ts);                                   \
 				return;                                                                                \
 			}                                                                                              \
                                                                                                                        \
