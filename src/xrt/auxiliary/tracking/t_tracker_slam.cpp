@@ -1464,6 +1464,7 @@ t_slam_create(struct xrt_frame_context *xfctx,
 	bool some_calib = config->slam_calib != nullptr;
 	if (!config_file && !some_calib) {
 		SLAM_WARN("Unable to determine sensor calibration, did you forget to set SLAM_CONFIG?");
+		t_vit_bundle_unload(&t.vit);
 		return -1;
 	}
 
@@ -1475,12 +1476,15 @@ t_slam_create(struct xrt_frame_context *xfctx,
 	vit_result_t vres = t.vit.tracker_create(&system_config, &t.tracker);
 	if (vres != VIT_SUCCESS) {
 		SLAM_ERROR("Failed to create VIT tracker (%d)", vres);
+		t_vit_bundle_unload(&t.vit);
 		return -1;
 	}
 
 	vres = t.vit.tracker_get_supported_extensions(t.tracker, &t.exts);
 	if (vres != VIT_SUCCESS) {
 		SLAM_ERROR("Failed to get VIT tracker supported extensions (%d)", vres);
+		t.vit.tracker_destroy(t.tracker);
+		t_vit_bundle_unload(&t.vit);
 		return -1;
 	}
 
