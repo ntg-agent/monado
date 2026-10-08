@@ -94,7 +94,6 @@ swapchain_dec_image_use(struct xrt_swapchain *xsc, uint32_t index)
 
 	sc->images[index].use_count--;
 	if (sc->images[index].use_count == 0) {
-		os_mutex_unlock(&sc->images[index].use_mutex);
 		pthread_cond_broadcast(&sc->images[index].use_cond);
 	}
 
