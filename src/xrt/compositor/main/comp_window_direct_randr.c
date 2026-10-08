@@ -312,6 +312,7 @@ append_randr_display(struct comp_window_direct_randr *w,
 		           "available. "
 		           "Check `xrandr --prop`.",
 		           name);
+		return;
 	}
 
 	xcb_randr_mode_info_t *mode_infos = xcb_randr_get_screen_resources_modes(resources_reply);
@@ -327,6 +328,7 @@ append_randr_display(struct comp_window_direct_randr *w,
 
 	if (mode_info == NULL) {
 		COMP_ERROR(w->base.base.c, "No mode with id %d found??", output_modes[0]);
+		return;
 	}
 
 
@@ -405,6 +407,12 @@ comp_window_direct_randr_get_outputs(struct comp_window_direct_randr *w)
 	    xcb_randr_get_screen_resources(connection, w->screen->root);
 	xcb_randr_get_screen_resources_reply_t *resources_reply =
 	    xcb_randr_get_screen_resources_reply(connection, resources_cookie, NULL);
+	if (resources_reply == NULL) {
+		free(non_desktop_reply);
+		COMP_ERROR(ct->c, "Could not get RandR screen resources.");
+		return;
+	}
+
 	xcb_randr_output_t *xcb_outputs = xcb_randr_get_screen_resources_outputs(resources_reply);
 
 	int count = xcb_randr_get_screen_resources_outputs_length(resources_reply);
@@ -417,6 +425,10 @@ comp_window_direct_randr_get_outputs(struct comp_window_direct_randr *w)
 		    xcb_randr_get_output_info(connection, xcb_outputs[i], XCB_CURRENT_TIME);
 		xcb_randr_get_output_info_reply_t *output_reply =
 		    xcb_randr_get_output_info_reply(connection, output_cookie, NULL);
+		if (output_reply == NULL) {
+			COMP_ERROR(ct->c, "Could not get RandR output info.");
+			continue;
+		}
 
 		// Only outputs with an available mode should be used
 		// (it is possible to see 'ghost' outputs with non-desktop=1).
