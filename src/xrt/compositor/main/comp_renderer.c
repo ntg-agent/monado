@@ -817,6 +817,12 @@ renderer_acquire_swapchain_image(struct comp_renderer *r)
 
 	if (ret != VK_SUCCESS) {
 		COMP_ERROR(r->c, "comp_target_acquire: %s", vk_result_string(ret));
+		return;
+	}
+
+	if (buffer_index >= r->buffer_count) {
+		COMP_ERROR(r->c, "comp_target_acquire: index %u out of range (%u)", buffer_index, r->buffer_count);
+		return;
 	}
 
 	r->acquired_buffer = buffer_index;
@@ -1120,6 +1126,16 @@ comp_renderer_draw(struct comp_renderer *r)
 	if (r->acquired_buffer < 0) {
 		// Ensures that renderings are created.
 		renderer_acquire_swapchain_image(r);
+	}
+
+	if (r->acquired_buffer < 0) {
+		// Acquire failed, skip rendering, emulate it for the timing.
+		comp_target_mark_submit_begin(ct, c->frame.rendering.id, os_monotonic_get_ns());
+		comp_target_mark_submit_end(ct, c->frame.rendering.id, os_monotonic_get_ns());
+
+		// Clear the rendering frame.
+		comp_frame_clear_locked(&c->frame.rendering);
+		return XRT_SUCCESS;
 	}
 
 	comp_target_update_timings(ct);
