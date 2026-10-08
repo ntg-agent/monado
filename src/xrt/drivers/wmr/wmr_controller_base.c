@@ -530,10 +530,14 @@ wmr_controller_base_get_tracked_pose(struct xrt_device *xdev,
 
 	struct xrt_relation_chain xrc = {0};
 
-	m_relation_chain_push_pose(&xrc, &wcb->P_aim);
-	if (name == XRT_INPUT_G2_CONTROLLER_GRIP_POSE || name == XRT_INPUT_ODYSSEY_CONTROLLER_GRIP_POSE ||
-	    name == XRT_INPUT_WMR_GRIP_POSE) {
-		m_relation_chain_push_pose(&xrc, &wcb->P_aim_grip);
+	/* The constellation tracker wants the raw device pose (the frame of the LED model and of
+	 * the observed poses it pushes back), so only apply the aim/grip offsets for app poses */
+	if (name != XRT_INPUT_GENERIC_TRACKER_POSE) {
+		m_relation_chain_push_pose(&xrc, &wcb->P_aim);
+		if (name == XRT_INPUT_G2_CONTROLLER_GRIP_POSE || name == XRT_INPUT_ODYSSEY_CONTROLLER_GRIP_POSE ||
+		    name == XRT_INPUT_WMR_GRIP_POSE) {
+			m_relation_chain_push_pose(&xrc, &wcb->P_aim_grip);
+		}
 	}
 
 	/* Apply the controller rotation */
@@ -549,7 +553,6 @@ wmr_controller_base_get_tracked_pose(struct xrt_device *xdev,
 	struct xrt_space_relation relation = {0};
 	relation.relation_flags = (enum xrt_space_relation_flags)(
 	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
-	    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT |
 	    XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT | XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT);
 
 	// Start with the static pose above, then apply IMU + tracking
@@ -561,8 +564,12 @@ wmr_controller_base_get_tracked_pose(struct xrt_device *xdev,
 	relation.angular_velocity = wcb->last_angular_velocity;
 	last_imu_timestamp_ns = wcb->last_imu_timestamp_ns;
 
+	/* Only report a tracked position once optical tracking has observed the controller,
+	 * otherwise it is just the static default position above */
 	if (wcb->last_tracked_pose_ts != 0) {
 		relation.pose.position = wcb->last_tracked_pose.position;
+		relation.relation_flags |= (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_POSITION_VALID_BIT |
+		                                                           XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
 	}
 	os_mutex_unlock(&wcb->data_lock);
 
@@ -940,8 +947,9 @@ wmr_controller_base_send_keepalive(struct wmr_controller_base *wcb, uint64_t now
 		os_mutex_lock(&wcb->data_lock);
 	}
 
-	/* Calculate the next timeout */
-	if (wcb->next_keepalive_timestamp_ns == 0) {
+	/* Calculate the next timeout. Resync if we fell behind (e.g. no reports for a while),
+	 * rather than sending a burst of catch-up keepalives */
+	if (wcb->next_keepalive_timestamp_ns == 0 || wcb->next_keepalive_timestamp_ns + KEEPALIVE_DURATION <= now_ns) {
 		wcb->next_keepalive_timestamp_ns = now_ns + KEEPALIVE_DURATION;
 	} else {
 		wcb->next_keepalive_timestamp_ns += KEEPALIVE_DURATION;

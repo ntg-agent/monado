@@ -2085,24 +2085,32 @@ wmr_hmd_create(enum wmr_headset_type hmd_type,
 	}
 
 	/* Send controller status request to check for online controllers
-	 * and wait 250ms for the reports for Reverb G2 and Odyssey+ */
+	 * and wait for the reports for Reverb G2 and Odyssey+ */
 	if (wh->hmd_desc->hmd_type == WMR_HEADSET_REVERB_G2 || wh->hmd_desc->hmd_type == WMR_HEADSET_SAMSUNG_800ZAA) {
 		bool have_controller_status = false;
 
 		os_mutex_lock(&wh->controller_status_lock);
 		if (wmr_hmd_request_controller_status(wh, 0) && wmr_hmd_request_controller_status(wh, 1)) {
-			/* @todo: Add a timed version of os_cond_wait and a timeout? */
-			/* This will be signalled from the reader thread */
-			while (!wh->have_left_controller_status && !wh->have_right_controller_status) {
-				os_cond_wait(&wh->controller_status_cond, &wh->controller_status_lock);
+			/* Wait for both reports from the reader thread, but don't hang forever if the HMD
+			 * never answers. There's no timed os_cond_wait, so poll with the lock dropped.
+			 * The flags are only set after the reader thread has set up an online controller,
+			 * including reading its config over the radio (~1s), and the Odyssey+ rejects the
+			 * status request, relying on its periodic (~0.5s) status reports. So be generous. */
+			const int64_t deadline_ns = os_monotonic_get_ns() + 3 * (int64_t)U_TIME_1S_IN_NS;
+			while (!(wh->have_left_controller_status && wh->have_right_controller_status) &&
+			       os_monotonic_get_ns() < deadline_ns) {
+				os_mutex_unlock(&wh->controller_status_lock);
+				os_nanosleep(U_TIME_1MS_IN_NS);
+				os_mutex_lock(&wh->controller_status_lock);
 			}
-			have_controller_status = true;
-		}
-		os_mutex_unlock(&wh->controller_status_lock);
-
-		if (!have_controller_status) {
+			have_controller_status = wh->have_left_controller_status && wh->have_right_controller_status;
+			if (!have_controller_status) {
+				WMR_WARN(wh, "Timed out waiting for controller status from HMD");
+			}
+		} else {
 			WMR_WARN(wh, "Failed to request controller status from HMD");
 		}
+		os_mutex_unlock(&wh->controller_status_lock);
 	}
 
 	wmr_hmd_setup_ui(wh);
