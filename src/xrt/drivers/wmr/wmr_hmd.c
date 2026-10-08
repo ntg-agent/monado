@@ -1769,11 +1769,28 @@ wmr_hmd_setup_trackers(struct wmr_hmd *wh, struct xrt_slam_sinks *out_sinks, str
 }
 
 static bool
-wmr_hmd_request_controller_status(struct wmr_hmd *wh)
+wmr_hmd_send_bt_control(struct wmr_hmd *wh, uint8_t msg, uint8_t controller_no)
 {
 	DRV_TRACE_MARKER();
-	unsigned char cmd[64] = {WMR_MS_HOLOLENS_MSG_BT_CONTROL, WMR_MS_HOLOLENS_MSG_CONTROLLER_STATUS};
-	return wmr_hmd_send_controller_packet(wh, cmd, sizeof(cmd));
+
+	/* Must be a feature report, see @ref wmr_bt_control_msg */
+	uint8_t cmd[64] = {WMR_MS_HOLOLENS_MSG_BT_CONTROL, msg, controller_no};
+
+	os_mutex_lock(&wh->hid_lock);
+	int ret = os_hid_set_feature(wh->hid_hololens_sensors_dev, cmd, sizeof(cmd));
+	os_mutex_unlock(&wh->hid_lock);
+
+	if (ret < 0) {
+		WMR_WARN(wh, "Failed to send BT control message 0x%02x for controller %u: %d", msg, controller_no, ret);
+		return false;
+	}
+	return true;
+}
+
+static bool
+wmr_hmd_request_controller_status(struct wmr_hmd *wh, int controller_no)
+{
+	return wmr_hmd_send_bt_control(wh, WMR_BT_CONTROL_MSG_ONLINE_STATUS, controller_no);
 }
 
 static xrt_result_t
@@ -2021,7 +2038,7 @@ wmr_hmd_create(enum wmr_headset_type hmd_type,
 		bool have_controller_status = false;
 
 		os_mutex_lock(&wh->controller_status_lock);
-		if (wmr_hmd_request_controller_status(wh)) {
+		if (wmr_hmd_request_controller_status(wh, 0) && wmr_hmd_request_controller_status(wh, 1)) {
 			/* Wait for both reports from the reader thread, but don't hang forever if the HMD
 			 * never answers. There's no timed os_cond_wait, so poll with the lock dropped.
 			 * The flags are only set after the reader thread has set up an online controller,
