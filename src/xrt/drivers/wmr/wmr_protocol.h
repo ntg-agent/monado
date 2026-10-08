@@ -58,14 +58,36 @@ extern "C" {
  * These are sent as 64 byte *feature* reports: {0x16, msg, controller_no, 0...}. The Odyssey+ firmware
  * rejects them when sent as output reports ("ERROR: CommandSet st 0, cmd 0, reqCmd N" in the debug log).
  * Replies arrive as WMR_MS_HOLOLENS_MSG_BT_CONTROL input reports: {0x16, msg, controller_no, ...}.
+ *
+ * Pairing sequence, as observed from Windows Mixed Reality pairing an Odyssey+ controller:
+ * PAIRING_STATUS (radio state, optional), PAIR, then CMD_STATUS polled every ~500ms until the
+ * pairing status in the reply reaches WMR_BT_PAIRING_STATUS_CONNECTED.
  */
 enum wmr_bt_control_msg
 {
 	WMR_BT_CONTROL_MSG_ONLINE_STATUS = 0x04,
 	WMR_BT_CONTROL_MSG_PAIR = 0x05,
 	WMR_BT_CONTROL_MSG_UNPAIR = 0x06,
+	/* Radio state of a controller slot. Reply: {0x16, 0x08, controller_no, bdaddr[6], ?[2], vid le16, pid le16} */
 	WMR_BT_CONTROL_MSG_PAIRING_STATUS = 0x08,
+	/* Result of the last command for a slot. Reply: {0x16, 0x09, controller_no, pairing status} */
 	WMR_BT_CONTROL_MSG_CMD_STATUS = 0x09,
+};
+
+/* Pairing status in WMR_BT_CONTROL_MSG_CMD_STATUS replies */
+enum wmr_bt_pairing_status
+{
+	WMR_BT_PAIRING_STATUS_IDLE = 0x00,
+	WMR_BT_PAIRING_STATUS_SEARCHING = 0x01,
+	/* The search finished without finding a controller for this slot in pairing mode ("pair nothing") */
+	WMR_BT_PAIRING_STATUS_NOT_FOUND = 0x02,
+	WMR_BT_PAIRING_STATUS_PAIRED = 0x03,
+	WMR_BT_PAIRING_STATUS_CONNECTED = 0x04,
+	/* Unpairing failed: e.g. "erase MC flash ERR = 67" when the HMD's SPI flash was busy during startup */
+	WMR_BT_PAIRING_STATUS_UNPAIR_FAILED = 0x07,
+	/* Returned straight away by an Odyssey+ asked to pair its factory-paired left controller slot while
+	 * it still holds a pairing, without starting a search. Windows always unpairs an occupied slot first. */
+	WMR_BT_PAIRING_STATUS_REFUSED = 0x05,
 };
 
 #define STR_TO_U32(s) ((uint32_t)(((s)[0]) | ((s)[1] << 8) | ((s)[2] << 16) | ((s)[3] << 24)))
