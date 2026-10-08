@@ -1198,6 +1198,9 @@ wmr_hmd_destroy(struct xrt_device *xdev)
 
 	struct wmr_hmd *wh = wmr_hmd(xdev);
 
+	// Remove the variable tracking root before anything it points to is freed.
+	u_var_remove_root(wh);
+
 	// Destroy the thread object.
 	os_thread_helper_destroy(&wh->oth);
 
