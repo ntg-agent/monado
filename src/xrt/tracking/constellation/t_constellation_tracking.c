@@ -1074,6 +1074,10 @@ t_constellation_tracker_create(struct xrt_frame_context *xfctx,
 
 	int ret;
 	struct t_constellation_tracker *ct = calloc(1, sizeof(struct t_constellation_tracker));
+	if (ct == NULL) {
+		U_LOG_E("Failed to allocate constellation tracker");
+		return -1;
+	}
 
 	ct->log_level = debug_get_log_option_ct_log();
 	ct->debug_draw_blob_tint = true;
@@ -1081,9 +1085,28 @@ t_constellation_tracker_create(struct xrt_frame_context *xfctx,
 	ct->hmd_xdev = hmd_xdev;
 	ct->controller_masks_sink = controller_mask_sink;
 
+	// Setup node
+	struct xrt_frame_node *xfn = &ct->node;
+	xfn->break_apart = constellation_tracker_node_break_apart;
+	xfn->destroy = constellation_tracker_node_destroy;
+
+	ret = os_mutex_init(&ct->tracked_device_lock);
+	if (ret != 0) {
+		CT_ERROR(ct, "Failed to init tracked device mutex!");
+		free(ct);
+		return -1;
+	}
+
+	ret = os_thread_helper_init(&ct->long_analysis_thread);
+	if (ret != 0) {
+		CT_ERROR(ct, "constellation tracker: Failed to init long analysis thread");
+		os_mutex_destroy(&ct->tracked_device_lock);
+		free(ct);
+		return -1;
+	}
+
 	// Set up the per-camera constellation tracking pieces config and pose
-	ct->cam_count = cams->cam_count;
-	for (int i = 0; i < ct->cam_count; i++) {
+	for (int i = 0; i < cams->cam_count; i++) {
 		struct constellation_tracker_camera_state *cam = ct->cam + i;
 		struct t_constellation_camera *cam_cfg = cams->cams + i;
 
@@ -1097,38 +1120,33 @@ t_constellation_tracker_create(struct xrt_frame_context *xfctx,
 		t_camera_model_params_from_t_camera_calibration(&cam_cfg->calibration, &cam->camera_model.calib);
 
 		os_mutex_init(&cam->bw_lock);
+		u_sink_debug_init(&cam->debug_sink);
+
+		// Count this camera now so the destroy path cleans up its partial state
+		ct->cam_count = i + 1;
+
 		cam->bw = blobwatch_new(cam_cfg->blob_min_threshold, cam_cfg->blob_detect_threshold);
 		cam->cs = correspondence_search_new(&cam->camera_model);
+		if (cam->bw == NULL || cam->cs == NULL) {
+			CT_ERROR(ct, "Failed to create blob watcher or correspondence search for camera %d", i);
+			constellation_tracker_node_destroy(&ct->node);
+			return -1;
+		}
 	}
 
 	// Set up frame receiver
 	ct->base.push_frame = constellation_tracker_receive_frame;
 
-	// Setup node
-	struct xrt_frame_node *xfn = &ct->node;
-	xfn->break_apart = constellation_tracker_node_break_apart;
-	xfn->destroy = constellation_tracker_node_destroy;
-
-	ret = os_mutex_init(&ct->tracked_device_lock);
-	if (ret != 0) {
-		CT_ERROR(ct, "Failed to init tracked device mutex!");
-		constellation_tracker_node_destroy(&ct->node);
-		return -1;
-	}
-
-	ret = os_thread_helper_init(&ct->long_analysis_thread);
-	if (ret != 0) {
-		CT_ERROR(ct, "constellation tracker: Failed to init long analysis thread");
-		constellation_tracker_node_destroy(&ct->node);
-		return -1;
-	}
+	// Hand ownership to the frame context before starting any threads, so
+	// that later failures leave ct to be torn down by the registered nodes
+	// (the fast queue's thread references ct and is destroyed before it).
+	xrt_frame_context_add(xfctx, &ct->node);
 
 	// Fast processing thread
 	ct->fast_process_sink.push_frame = constellation_tracker_process_frame_fast;
 
 	if (!u_sink_queue_create(xfctx, MAX_FAST_QUEUE_SIZE, &ct->fast_process_sink, &ct->fast_q_sink)) {
 		CT_ERROR(ct, "Failed to init fast analysis queue!");
-		constellation_tracker_node_destroy(&ct->node);
 		return -1;
 	}
 
@@ -1136,7 +1154,6 @@ t_constellation_tracker_create(struct xrt_frame_context *xfctx,
 	ret = os_thread_helper_start(&ct->long_analysis_thread, constellation_tracking_long_analysis_thread, ct);
 	if (ret != 0) {
 		CT_ERROR(ct, "constellation tracker: Failed to start long analysis thread!");
-		constellation_tracker_node_destroy(&ct->node);
 		return -1;
 	}
 
@@ -1172,12 +1189,8 @@ t_constellation_tracker_create(struct xrt_frame_context *xfctx,
 
 		char cam_name[64];
 		sprintf(cam_name, "Cam %u", i);
-		u_sink_debug_init(&cam->debug_sink);
 		u_var_add_sink_debug(ct, &cam->debug_sink, cam_name);
 	}
-
-	// Hand ownership to the frame context
-	xrt_frame_context_add(xfctx, &ct->node);
 
 	CT_DEBUG(ct, "Constellation tracker created");
 
