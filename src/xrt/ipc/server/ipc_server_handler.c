@@ -840,16 +840,20 @@ ipc_handle_space_destroy(volatile struct ipc_client_state *ics, uint32_t space_i
 	xrt_result_t xret = ipc_server_objects_destroy_xspc(ics, space_id);
 	IPC_CHK_AND_RET(ics->server, xret, "ipc_server_objects_destroy_xspc");
 
-	if (space_id == ics->local_space_index) {
+	if (space_id == ics->local_space_index && ics->local_space_overseer_index < IPC_MAX_CLIENT_SPACES) {
 		struct xrt_space **xslocal_ptr =
 		    (struct xrt_space **)&ics->server->xso->localspace[ics->local_space_overseer_index];
 		xrt_space_reference(xslocal_ptr, NULL);
+		ics->local_space_index = UINT32_MAX;
+		ics->local_space_overseer_index = UINT32_MAX;
 	}
 
-	if (space_id == ics->local_floor_space_index) {
+	if (space_id == ics->local_floor_space_index && ics->local_floor_space_overseer_index < IPC_MAX_CLIENT_SPACES) {
 		struct xrt_space **xslocalfloor_ptr =
 		    (struct xrt_space **)&ics->server->xso->localfloorspace[ics->local_floor_space_overseer_index];
 		xrt_space_reference(xslocalfloor_ptr, NULL);
+		ics->local_floor_space_index = UINT32_MAX;
+		ics->local_floor_space_overseer_index = UINT32_MAX;
 	}
 
 	return XRT_SUCCESS;
