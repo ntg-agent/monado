@@ -365,12 +365,26 @@ hololens_handle_debug(struct wmr_hmd *wh, const unsigned char *buffer, int size)
 		WMR_TRACE(wh, "Debug packet (%i) 0x%02x had strange magic 0x%08x", size, buffer[0], magic);
 		return;
 	}
-	uint32_t timestamp = read32(&buffer);
-	uint16_t seq = read16(&buffer);
-	uint8_t src_tag = read8(&buffer);
-	int msg_len = size - 12;
+	/* The magic is followed by one or more packed 63 byte records:
+	 * timestamp (4), sequence (2), source tag (1), NUL padded text (56) */
+	const int record_size = 63;
+	const unsigned char *end = buffer + (size - 5);
+	while (end - buffer >= 8) {
+		const unsigned char *record = buffer;
+		uint32_t timestamp = read32(&buffer);
+		uint16_t seq = read16(&buffer);
+		uint8_t src_tag = read8(&buffer);
+		int msg_len = (int)(end - buffer);
+		if (msg_len > record_size - 7) {
+			msg_len = record_size - 7;
+		}
 
-	WMR_DEBUG(wh, "HMD debug: TS %f seq %u src %d: %.*s", timestamp / 1000.0, seq, src_tag, msg_len, buffer);
+		if (msg_len > 0 && buffer[0] != '\0') {
+			WMR_DEBUG(wh, "HMD debug: TS %f seq %u src %d: %.*s", timestamp / 1000.0, seq, src_tag,
+			          (int)strnlen((const char *)buffer, msg_len), buffer);
+		}
+		buffer = record + record_size;
+	}
 }
 
 static void
