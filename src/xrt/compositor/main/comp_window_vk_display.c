@@ -197,7 +197,7 @@ comp_window_vk_display_init(struct comp_target *ct)
 		return false;
 	}
 
-	if (ct->c->settings.vk_display > (int)display_count) {
+	if (ct->c->settings.vk_display < 0 || ct->c->settings.vk_display >= (int)display_count) {
 		COMP_ERROR(ct->c, "Requested display %d, but only %d found.", ct->c->settings.vk_display,
 		           display_count);
 		print_found_displays(ct->c, display_props, display_count);
