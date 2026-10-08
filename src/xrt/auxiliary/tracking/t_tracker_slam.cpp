@@ -911,8 +911,11 @@ filter_pose(TrackerSlam &t, timepoint_ns when_ns, struct xrt_space_relation *out
 
 		if (out_relation->relation_flags & XRT_SPACE_RELATION_ORIENTATION_VALID_BIT) {
 			// Don't save w component as we can retrieve it knowing these are (almost) unit quaternions
-			xrt_vec3 rot = {out_relation->pose.orientation.x, out_relation->pose.orientation.y,
-			                out_relation->pose.orientation.z};
+			// Canonicalize the sign so that w >= 0, q and -q are the same rotation
+			float sign = out_relation->pose.orientation.w < 0.f ? -1.f : 1.f;
+			xrt_vec3 rot = {sign * out_relation->pose.orientation.x,
+			                sign * out_relation->pose.orientation.y,
+			                sign * out_relation->pose.orientation.z};
 			m_ff_vec3_f32_push(t.filter.rot_ff, &rot, when_ns);
 		}
 
@@ -924,7 +927,8 @@ filter_pose(TrackerSlam &t, timepoint_ns when_ns, struct xrt_space_relation *out
 		m_ff_vec3_f32_filter(t.filter.rot_ff, when_ns - window, when_ns, &avg_rot);
 
 		// Considering the naive averaging this W is a bit wrong, but it feels reasonably well
-		float avg_rot_w = sqrtf(1 - (avg_rot.x * avg_rot.x + avg_rot.y * avg_rot.y + avg_rot.z * avg_rot.z));
+		float avg_rot_w =
+		    sqrtf(fmaxf(0.f, 1 - (avg_rot.x * avg_rot.x + avg_rot.y * avg_rot.y + avg_rot.z * avg_rot.z)));
 		out_relation->pose.orientation = xrt_quat{avg_rot.x, avg_rot.y, avg_rot.z, avg_rot_w};
 		out_relation->pose.position = avg_pos;
 
