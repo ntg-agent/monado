@@ -86,6 +86,11 @@ m_clock_windowed_skew_tracker_reset(struct m_clock_windowed_skew_tracker *t)
 	// Clear time tracking
 	t->have_last_observation = false;
 	t->current_window_samples = 0;
+	t->current_window_pos = 0;
+	t->current_min_skew = 0;
+	t->current_min_skew_pos = 0;
+	t->current_skew = 0;
+	t->have_skew_estimate = false;
 }
 
 void
@@ -177,7 +182,7 @@ m_clock_windowed_skew_tracker_push(struct m_clock_windowed_skew_tracker *t,
 
 	/* Update the moving average skew */
 	size_t w = t->current_window_samples;
-	t->current_skew = (t->current_min_skew + t->current_skew * (w - 1)) / w;
+	t->current_skew = (t->current_min_skew + t->current_skew * (time_duration_ns)(w - 1)) / (time_duration_ns)w;
 	t->have_skew_estimate = true;
 }
 
