@@ -10,6 +10,7 @@
  * @ingroup ipc_server
  */
 
+#include "util/u_handles.h"
 #include "util/u_misc.h"
 #include "util/u_trace_marker.h"
 
@@ -148,6 +149,20 @@ ipc_handle_swapchain_create(volatile struct ipc_client_state *ics,
 	return XRT_SUCCESS;
 }
 
+/*!
+ * The generated dispatch code has already received the fds into the handles
+ * array, so on early error returns we must close them or a client could leak
+ * server fds.
+ */
+static void
+close_received_handles(const xrt_graphics_buffer_handle_t *handles, uint32_t handle_count)
+{
+	for (uint32_t i = 0; i < handle_count; i++) {
+		xrt_graphics_buffer_handle_t handle = handles[i];
+		u_graphics_buffer_unref(&handle);
+	}
+}
+
 xrt_result_t
 ipc_handle_swapchain_import(volatile struct ipc_client_state *ics,
                             const struct xrt_swapchain_create_info *info,
@@ -161,8 +176,21 @@ ipc_handle_swapchain_import(volatile struct ipc_client_state *ics,
 	xrt_result_t xret = XRT_SUCCESS;
 	uint32_t index = 0;
 
+	if (ics->xc == NULL) {
+		close_received_handles(handles, handle_count);
+		return XRT_ERROR_IPC_SESSION_NOT_CREATED;
+	}
+
+	// The generated code only limits this to XRT_MAX_IPC_HANDLES.
+	if (handle_count > XRT_MAX_SWAPCHAIN_IMAGES) {
+		IPC_ERROR(ics->server, "Too many handles (%u) for swapchain import!", handle_count);
+		close_received_handles(handles, handle_count);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
 	xret = validate_swapchain_state(ics, &index);
 	if (xret != XRT_SUCCESS) {
+		close_received_handles(handles, handle_count);
 		return xret;
 	}
 
