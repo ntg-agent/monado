@@ -478,10 +478,14 @@ ipc_server_client_destroy_session_and_compositor(volatile struct ipc_client_stat
 		IPC_TRACE(ics->server, "Destroyed future %d.", j);
 	}
 
+	// Detach the compositor under the lock so other client threads walking
+	// the client list can no longer see it while it is being destroyed.
+	struct xrt_compositor *xc = (struct xrt_compositor *)ics->xc;
+	ics->xc = NULL;
+
 	os_mutex_unlock(&ics->server->global_state.lock);
 
-	// Cast away volatile.
-	xrt_comp_destroy((struct xrt_compositor **)&ics->xc);
+	xrt_comp_destroy(&xc);
 
 	// Cast away volatile.
 	xrt_session_destroy((struct xrt_session **)&ics->xs);
