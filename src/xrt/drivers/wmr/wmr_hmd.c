@@ -1458,11 +1458,13 @@ wmr_hmd_get_slam_tracked_pose(struct xrt_device *xdev,
 #endif
 	}
 
+	// Apply the correction to a local copy, wh->pose must stay uncorrected or it would be re-applied on every call.
+	struct xrt_pose pose = wh->pose;
 	if (wh->tracking.imu2me) {
-		math_pose_transform(&wh->pose, &wh->config.sensors.transforms.P_imu_me, &wh->pose);
+		math_pose_transform(&pose, &wh->config.sensors.transforms.P_imu_me, &pose);
 	}
 
-	out_relation->pose = wh->pose;
+	out_relation->pose = pose;
 	out_relation->relation_flags = (enum xrt_space_relation_flags)(
 	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_POSITION_VALID_BIT |
 	    XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
