@@ -533,11 +533,11 @@ wmr_camera_open(struct wmr_camera_open_config *config)
 	}
 
 	// Set exposure & gain for controller tracking
-	for (int i = cam->tcam_count; i < cam->tcam_count; i++) {
-		const struct wmr_camera_config *config = &cam->tcam_confs[i];
+	for (int i = 0; i < cam->tcam_count; i++) {
+		const struct wmr_camera_config *tcam_conf = &cam->tcam_confs[i];
 
-		bool status =
-		    wmr_camera_set_ctrl_exposure_gain(cam, config->location, DEFAULT_CTRL_EXPOSURE, DEFAULT_CTRL_GAIN);
+		int status = wmr_camera_set_ctrl_exposure_gain(cam, tcam_conf->location, DEFAULT_CTRL_EXPOSURE,
+		                                               DEFAULT_CTRL_GAIN);
 		if (status != 0) {
 			WMR_CAM_ERROR(cam,
 			              "Failed to set exposure and gain for controller tracking frames on camera %d", i);
