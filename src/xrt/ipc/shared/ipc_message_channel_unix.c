@@ -164,16 +164,28 @@ ipc_receive_fds(struct ipc_message_channel *imc, void *out_data, size_t size, in
 		return XRT_ERROR_IPC_FAILURE;
 	}
 
-	// Did the other side actually send the expected file descriptors.
+	// handle_count is the capacity of out_handles, the other side may send
+	// fewer (or no) file descriptors. Unused slots are set to -1 so they
+	// can never be mistaken for a valid fd such as 0.
+	for (uint32_t i = 0; i < handle_count; i++) {
+		out_handles[i] = -1;
+	}
+
 	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+	if (cmsg == NULL && (msg.msg_flags & MSG_CTRUNC) == 0) {
+		return XRT_SUCCESS;
+	}
+
 	bool ok = cmsg != NULL &&                         //
 	          cmsg->cmsg_level == SOL_SOCKET &&       //
 	          cmsg->cmsg_type == SCM_RIGHTS &&        //
-	          cmsg->cmsg_len == CMSG_LEN(fds_size) && //
+	          cmsg->cmsg_len >= CMSG_LEN(0) &&        //
+	          cmsg->cmsg_len <= CMSG_LEN(fds_size) && //
+	          CMSG_NXTHDR(&msg, cmsg) == NULL &&      //
 	          (msg.msg_flags & MSG_CTRUNC) == 0;
 
 	if (!ok) {
-		IPC_ERROR(imc, "recvmsg(%i) failed: missing or malformed file descriptors, expected %u!",
+		IPC_ERROR(imc, "recvmsg(%i) failed: malformed or truncated file descriptors, capacity %u!",
 		          imc->ipc_handle, handle_count);
 
 		// Close any file descriptors that did arrive, so they don't leak.
@@ -192,7 +204,7 @@ ipc_receive_fds(struct ipc_message_channel *imc, void *out_data, size_t size, in
 		return XRT_ERROR_IPC_FAILURE;
 	}
 
-	memcpy(out_handles, CMSG_DATA(cmsg), fds_size);
+	memcpy(out_handles, CMSG_DATA(cmsg), cmsg->cmsg_len - CMSG_LEN(0));
 
 	return XRT_SUCCESS;
 }
