@@ -83,6 +83,7 @@ struct constellation_tracker_device
 	struct t_constellation_tracked_device_connection *connection;
 
 	bool have_led_model;
+	bool led_model_rejected; //!< LED model was too large for the pose metrics buffers
 	struct t_constellation_led_model led_model;
 	struct t_constellation_search_model *search_led_model;
 
@@ -735,9 +736,25 @@ constellation_tracker_process_frame_fast(struct xrt_frame_sink *sink, struct xrt
 		struct constellation_tracker_device *device = ct->devices + d;
 
 		if (!device->have_led_model) {
+			if (device->led_model_rejected) {
+				continue;
+			}
 			if (!constellation_tracked_device_connection_get_led_model(device->connection,
 			                                                           &device->led_model)) {
 				continue; // Can't do anything without the LED info
+			}
+
+			// The pose metrics code uses fixed size buffers
+			if (device->led_model.num_leds > MAX_OBJECT_LEDS ||
+			    device->led_model.num_bounding_points > MAX_OBJECT_LEDS) {
+				CT_ERROR(ct,
+				         "Device %u LED model is too large (%u LEDs, %u bounding points, max %u). "
+				         "Ignoring device.",
+				         device->led_model.id, device->led_model.num_leds,
+				         device->led_model.num_bounding_points, MAX_OBJECT_LEDS);
+				t_constellation_led_model_clear(&device->led_model);
+				device->led_model_rejected = true;
+				continue;
 			}
 
 			CT_INFO(ct, "Constellation Tracker: Retrieved controller LED model for device %u",
