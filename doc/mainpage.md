@@ -47,6 +47,7 @@ includes a section for changes that have not yet been in a tagged release.
 * @ref how-to-release
 * @ref winbuild
 * @ref packaging-notes - for people maintaining Linux packages of Monado
+* @ref howto-steam-games - running Steam VR games on Monado without SteamVR
 
 ## Design Documentation
 

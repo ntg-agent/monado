@@ -216,7 +216,12 @@ init_epoll(struct ipc_server_mainloop *ml, bool no_stdin)
 		ev.events = EPOLLIN;
 		ev.data.fd = 0; // stdin
 		ret = epoll_ctl(ml->epoll_fd, EPOLL_CTL_ADD, 0, &ev);
-		if (ret < 0) {
+		if (ret < 0 && (errno == EPERM || errno == EBADF)) {
+			// stdin is closed or can't be polled, for example
+			// /dev/null or a regular file when started from a
+			// desktop launcher or script; run without it.
+			U_LOG_W("Can not poll stdin (%s), not stopping on input.", strerror(errno));
+		} else if (ret < 0) {
 			U_LOG_E("epoll_ctl(stdin) failed '%i'", ret);
 			return ret;
 		}

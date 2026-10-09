@@ -81,17 +81,18 @@ ipc_receive(struct ipc_message_channel *imc, void *out_data, size_t size);
 #ifdef XRT_OS_UNIX
 
 /*!
- * Receive a message along with a known number of file descriptors over the IPC
+ * Receive a message along with up to @p fd_count file descriptors over the IPC
  * channel.
+ *
+ * The other end may send fewer file descriptors than @p fd_count, or none;
+ * elements of @p out_fds that did not receive one are set to -1.
  *
  * @param imc           Message channel to use
  * @param[out] out_data Pointer to the buffer to fill with data. Must not be
  *                      null.
  * @param[in] size      Maximum size to read, must be greater than 0
  * @param[out] out_fds  Array of file descriptors to populate. Must not be null.
- * @param[in] fd_count  Number of elements to receive into @p out_fds, must be
- *                      greater than 0 and must match the value provided at the
- *                      other end.
+ * @param[in] fd_count  Capacity of @p out_fds, must be greater than 0.
  *
  * @public @memberof ipc_message_channel
  */

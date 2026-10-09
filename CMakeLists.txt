@@ -339,6 +339,9 @@ endif()
 option_with_deps(XRT_INSTALL_SYSTEMD_UNIT_FILES "Install user unit files for systemd socket activation on installation" DEPENDS XRT_HAVE_SYSTEMD)
 option_with_deps(XRT_INSTALL_ABSOLUTE_SYSTEMD_UNIT_FILES "Use an absolute path to monado-system in installed user unit files for systemd socket activation" DEPENDS XRT_HAVE_SYSTEMD)
 
+# Realtime priority for the service
+option_with_deps(XRT_INSTALL_SERVICE_CAP_SYS_NICE "Give the installed monado-service CAP_SYS_NICE with setcap (needs to install as root)" DEFAULT OFF DEPENDS XRT_HAVE_LINUX XRT_FEATURE_SERVICE)
+
 # Driver deps to use (sorted, though there are some internal dependencies)
 option_with_deps(XRT_HAVE_BLUETOOTH "Enable Bluetooth (legacy, non-ble)" DEPENDS BLUETOOTH_FOUND)
 option_with_deps(XRT_HAVE_GST "Enable gstreamer" DEPENDS GST_FOUND)
