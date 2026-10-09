@@ -32,6 +32,7 @@
 #include "wmr_source.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -163,6 +164,9 @@ wmr_controller_send_fw_cmd(struct wmr_controller_base *wcb,
 	return -ETIMEDOUT;
 }
 
+/* Sanity cap on the size of a firmware block a device may announce */
+#define WMR_FW_BLOCK_MAX_SIZE (1024 * 1024)
+
 XRT_MAYBE_UNUSED static int
 wmr_read_fw_block(struct wmr_controller_base *d, uint8_t blk_id, uint8_t **out_data, size_t *out_size)
 {
@@ -183,7 +187,17 @@ wmr_read_fw_block(struct wmr_controller_base *d, uint8_t blk_id, uint8_t **out_d
 		return -1;
 	}
 
-	data_size = fw_cmd_response.response.blk_remain + fw_cmd_response.response.len;
+	if (fw_cmd_response.response.len > sizeof(fw_cmd_response.response.data)) {
+		WMR_WARN(d, "Failed to read fw - invalid header length %u", fw_cmd_response.response.len);
+		return -1;
+	}
+
+	uint64_t total_size = (uint64_t)fw_cmd_response.response.blk_remain + fw_cmd_response.response.len;
+	if (total_size > WMR_FW_BLOCK_MAX_SIZE) {
+		WMR_WARN(d, "Failed to read fw - block %d size %" PRIu64 " too large", blk_id, total_size);
+		return -1;
+	}
+	data_size = (uint32_t)total_size;
 	WMR_DEBUG(d, "FW header %d bytes, %u bytes in block", fw_cmd_response.response.len, data_size);
 	if (data_size == 0)
 		return -1;
@@ -199,6 +213,8 @@ wmr_read_fw_block(struct wmr_controller_base *d, uint8_t blk_id, uint8_t **out_d
 	data_end = data + data_size;
 
 	uint8_t to_copy = fw_cmd_response.response.len;
+	if (to_copy > data_size)
+		to_copy = data_size;
 
 	memcpy(data_pos, fw_cmd_response.response.data, to_copy);
 	data_pos += to_copy;
@@ -210,12 +226,21 @@ wmr_read_fw_block(struct wmr_controller_base *d, uint8_t blk_id, uint8_t **out_d
 		os_nanosleep(U_TIME_1MS_IN_NS * 10); // Sleep 10ms
 		if (wmr_controller_send_fw_cmd(d, &fw_cmd, 0x02, &fw_cmd_response) < 0) {
 			WMR_WARN(d, "Failed to read fw - cmd 0x02 failed @ offset %zu", data_pos - data);
+			free(data);
+			return -1;
+		}
+
+		if (fw_cmd_response.response.len == 0 ||
+		    fw_cmd_response.response.len > sizeof(fw_cmd_response.response.data)) {
+			WMR_WARN(d, "Failed to read fw - invalid chunk length %u @ offset %zu",
+			         fw_cmd_response.response.len, data_pos - data);
+			free(data);
 			return -1;
 		}
 
 		uint8_t to_copy = fw_cmd_response.response.len;
-		if (data_pos + to_copy > data_end)
-			to_copy = data_end - data_pos;
+		if (to_copy > (size_t)(data_end - data_pos))
+			to_copy = (uint8_t)(data_end - data_pos);
 
 		WMR_DEBUG(d, "Read %d bytes @ offset %zu / %d", to_copy, data_pos - data, data_size);
 		memcpy(data_pos, fw_cmd_response.response.data, to_copy);
