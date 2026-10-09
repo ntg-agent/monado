@@ -291,15 +291,18 @@ ipc_client_setup_shm(struct ipc_connection *ipc_c)
 	DWORD access = FILE_MAP_READ | FILE_MAP_WRITE;
 
 	ipc_c->ism = MapViewOfFile(ipc_c->ism_handle, access, 0, 0, size);
+	const bool map_failed = ipc_c->ism == NULL;
 #else
 	const int flags = MAP_SHARED;
 	const int access = PROT_READ | PROT_WRITE;
 
 	ipc_c->ism = mmap(NULL, size, access, flags, ipc_c->ism_handle, 0);
+	const bool map_failed = ipc_c->ism == MAP_FAILED;
 #endif
 
-	if (ipc_c->ism == NULL) {
+	if (map_failed) {
 		IPC_ERROR(ipc_c, "Failed to mmap shm!");
+		ipc_c->ism = NULL;
 		return XRT_ERROR_IPC_FAILURE;
 	}
 
