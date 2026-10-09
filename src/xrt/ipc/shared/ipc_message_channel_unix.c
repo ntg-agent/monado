@@ -164,13 +164,35 @@ ipc_receive_fds(struct ipc_message_channel *imc, void *out_data, size_t size, in
 		return XRT_ERROR_IPC_FAILURE;
 	}
 
-	// Did the other side actually send file descriptors.
+	// Did the other side actually send the expected file descriptors.
 	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-	if (cmsg == NULL) {
-		return XRT_SUCCESS;
+	bool ok = cmsg != NULL &&                         //
+	          cmsg->cmsg_level == SOL_SOCKET &&       //
+	          cmsg->cmsg_type == SCM_RIGHTS &&        //
+	          cmsg->cmsg_len == CMSG_LEN(fds_size) && //
+	          (msg.msg_flags & MSG_CTRUNC) == 0;
+
+	if (!ok) {
+		IPC_ERROR(imc, "recvmsg(%i) failed: missing or malformed file descriptors, expected %u!",
+		          imc->ipc_handle, handle_count);
+
+		// Close any file descriptors that did arrive, so they don't leak.
+		for (; cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+			if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
+			    cmsg->cmsg_len < CMSG_LEN(0)) {
+				continue;
+			}
+			size_t count = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+			int *fds = (int *)CMSG_DATA(cmsg);
+			for (size_t i = 0; i < count; i++) {
+				close(fds[i]);
+			}
+		}
+
+		return XRT_ERROR_IPC_FAILURE;
 	}
 
-	memcpy(out_handles, (int *)CMSG_DATA(cmsg), fds_size);
+	memcpy(out_handles, CMSG_DATA(cmsg), fds_size);
 
 	return XRT_SUCCESS;
 }
