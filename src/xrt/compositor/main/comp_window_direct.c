@@ -136,13 +136,17 @@ get_primary_display_mode(struct comp_target_swapchain *cts,
 	COMP_DEBUG(ct->c, "found display mode %dx%d@%.2f", props.parameters.visibleRegion.width,
 	           props.parameters.visibleRegion.height, (float)props.parameters.refreshRate / 1000.);
 
-	int64_t new_frame_interval = (int64_t)(1000. * 1000. * 1000. * 1000. / props.parameters.refreshRate);
+	if (props.parameters.refreshRate == 0) {
+		COMP_WARN(ct->c, "Display mode reports a refresh rate of zero, keeping the current frame interval");
+	} else {
+		int64_t new_frame_interval = (int64_t)(1000. * 1000. * 1000. * 1000. / props.parameters.refreshRate);
 
-	COMP_DEBUG(ct->c, "Updating compositor frame interval from %" PRIu64 " (%f Hz) to %" PRIu64 " (%f Hz)",
-	           ct->c->frame_interval_ns, 1000. * 1000. * 1000. / (float)ct->c->frame_interval_ns,
-	           new_frame_interval, (float)props.parameters.refreshRate / 1000.);
+		COMP_DEBUG(ct->c, "Updating compositor frame interval from %" PRIu64 " (%f Hz) to %" PRIu64 " (%f Hz)",
+		           ct->c->frame_interval_ns, 1000. * 1000. * 1000. / (float)ct->c->frame_interval_ns,
+		           new_frame_interval, (float)props.parameters.refreshRate / 1000.);
 
-	ct->c->frame_interval_ns = new_frame_interval;
+		ct->c->frame_interval_ns = new_frame_interval;
+	}
 
 	free(mode_properties);
 
