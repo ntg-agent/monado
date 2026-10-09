@@ -12,6 +12,13 @@
 #include "comp_window_direct.h"
 
 #include "util/u_misc.h"
+#include "os/os_time.h"
+#include "util/u_time.h"
+
+#ifdef VK_USE_PLATFORM_XLIB_XRANDR_EXT
+#include <xcb/randr.h>
+#include <X11/Xlib-xcb.h>
+#endif
 
 
 static inline struct vk_bundle *
@@ -292,6 +299,114 @@ comp_window_direct_connect(struct comp_target_swapchain *cts, Display **dpy)
 	return true;
 }
 
+/*!
+ * Some NVIDIA driver versions don't recognise the HMD EDID as non-desktop and
+ * X enables the output as a normal desktop output, which makes
+ * vkAcquireXlibDisplayEXT fail. Disable (only) the RandR output that belongs to
+ * the given Vulkan display so that it can be acquired.
+ *
+ * The CRTC is only disabled if the HMD output is its sole output, so that a
+ * desktop monitor sharing the CRTC (clone/mirror mode) is never blanked.
+ */
+static bool
+disable_desktop_output(struct comp_target_swapchain *cts, Display *dpy, VkDisplayKHR display)
+{
+	struct vk_bundle *vk = get_vk(cts);
+	VkDisplayPropertiesKHR *props = NULL;
+	uint32_t count = 0;
+	char name[64] = {0};
+	bool disabled = false;
+
+	if (vk_enumerate_physical_device_display_properties(vk, vk->physical_device, &count, &props) != VK_SUCCESS) {
+		return false;
+	}
+
+	// The display name ends with "(<output name>)".
+	for (uint32_t i = 0; i < count; i++) {
+		const char *dn = props[i].displayName;
+		if (props[i].display != display || dn == NULL) {
+			continue;
+		}
+		const char *open = strrchr(dn, '(');
+		const char *close = strrchr(dn, ')');
+		if (open != NULL && close != NULL && close > open + 1 && (size_t)(close - open) < sizeof(name)) {
+			memcpy(name, open + 1, close - open - 1);
+		}
+		break;
+	}
+	free(props);
+
+	if (name[0] == '\0') {
+		return false;
+	}
+
+	xcb_connection_t *conn = XGetXCBConnection(dpy);
+	xcb_window_t root = DefaultRootWindow(dpy);
+
+	xcb_randr_get_screen_resources_cookie_t res_cookie = xcb_randr_get_screen_resources(conn, root);
+	xcb_randr_get_screen_resources_reply_t *res = xcb_randr_get_screen_resources_reply(conn, res_cookie, NULL);
+	if (res == NULL) {
+		return false;
+	}
+
+	xcb_randr_output_t *outputs = xcb_randr_get_screen_resources_outputs(res);
+	int output_count = xcb_randr_get_screen_resources_outputs_length(res);
+	for (int i = 0; i < output_count; i++) {
+		xcb_randr_get_output_info_cookie_t oc =
+		    xcb_randr_get_output_info(conn, outputs[i], res->config_timestamp);
+		xcb_randr_get_output_info_reply_t *oi = xcb_randr_get_output_info_reply(conn, oc, NULL);
+		if (oi == NULL) {
+			continue;
+		}
+
+		int len = xcb_randr_get_output_info_name_length(oi);
+		const char *oname = (const char *)xcb_randr_get_output_info_name(oi);
+		if ((size_t)len != strlen(name) || strncmp(oname, name, len) != 0) {
+			free(oi);
+			continue;
+		}
+
+		// Found the HMD output, if it has no CRTC X isn't using it.
+		if (oi->crtc != XCB_NONE) {
+			xcb_randr_get_crtc_info_cookie_t ic =
+			    xcb_randr_get_crtc_info(conn, oi->crtc, res->config_timestamp);
+			xcb_randr_get_crtc_info_reply_t *ci = xcb_randr_get_crtc_info_reply(conn, ic, NULL);
+			if (ci == NULL) {
+				COMP_WARN(cts->base.c, "Failed to query CRTC of X output '%s', not disabling it.",
+				          name);
+			} else if (xcb_randr_get_crtc_info_outputs_length(ci) != 1 ||
+			           xcb_randr_get_crtc_info_outputs(ci)[0] != outputs[i]) {
+				COMP_WARN(cts->base.c,
+				          "CRTC of X output '%s' is shared with other outputs, not disabling it.",
+				          name);
+			} else {
+				xcb_randr_set_crtc_config_cookie_t cc =
+				    xcb_randr_set_crtc_config(conn, oi->crtc, XCB_CURRENT_TIME, res->config_timestamp,
+				                              0, 0, XCB_NONE, XCB_RANDR_ROTATION_ROTATE_0, 0, NULL);
+				xcb_randr_set_crtc_config_reply_t *cr = xcb_randr_set_crtc_config_reply(conn, cc, NULL);
+				if (cr != NULL && cr->status == XCB_RANDR_SET_CONFIG_SUCCESS) {
+					COMP_INFO(cts->base.c,
+					          "Disabled X desktop output '%s' (crtc %u) to acquire it.", name,
+					          (unsigned)oi->crtc);
+					disabled = true;
+				} else {
+					COMP_WARN(cts->base.c, "Failed to disable X desktop output '%s'.", name);
+				}
+				free(cr);
+			}
+			free(ci);
+		}
+		free(oi);
+		break;
+	}
+	free(res);
+
+	if (disabled) {
+		XSync(dpy, False);
+	}
+	return disabled;
+}
+
 VkResult
 comp_window_direct_acquire_xlib_display(struct comp_target_swapchain *cts, Display *dpy, VkDisplayKHR display)
 {
@@ -299,6 +414,12 @@ comp_window_direct_acquire_xlib_display(struct comp_target_swapchain *cts, Displ
 	VkResult ret;
 
 	ret = vk->vkAcquireXlibDisplayEXT(vk->physical_device, dpy, display);
+	if (ret != VK_SUCCESS && disable_desktop_output(cts, dpy, display)) {
+		for (int i = 0; i < 10 && ret != VK_SUCCESS; i++) {
+			os_nanosleep(U_TIME_1MS_IN_NS * 100);
+			ret = vk->vkAcquireXlibDisplayEXT(vk->physical_device, dpy, display);
+		}
+	}
 	if (ret != VK_SUCCESS) {
 		COMP_ERROR(cts->base.c, "vkAcquireXlibDisplayEXT: %s (0x%016" PRIx64 ")", vk_result_string(ret),
 		           (uint64_t)display);
