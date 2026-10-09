@@ -623,6 +623,24 @@ device_try_recover_pose(struct t_constellation_tracker *ct,
 }
 
 // Fast frame processing: blob extraction and match to existing predictions
+/* Release a sample, returning its blob observations to each camera's blobwatch
+ * under bw_lock, as the release can race with blobwatch_process() on the fast thread */
+static void
+ct_sample_free(struct t_constellation_tracker *ct, struct constellation_tracking_sample *sample)
+{
+	for (int i = 0; i < sample->n_views; i++) {
+		struct tracking_sample_frame *view = sample->views + i;
+		if (view->bwobs != NULL) {
+			struct constellation_tracker_camera_state *cam = ct->cam + i;
+			os_mutex_lock(&cam->bw_lock);
+			blobwatch_release_observation(view->bw, view->bwobs);
+			os_mutex_unlock(&cam->bw_lock);
+			view->bwobs = NULL;
+		}
+	}
+	constellation_tracking_sample_free(sample);
+}
+
 static void
 constellation_tracker_process_frame_fast(struct xrt_frame_sink *sink, struct xrt_frame *xf)
 {
@@ -855,14 +873,14 @@ constellation_tracker_process_frame_fast(struct xrt_frame_sink *sink, struct xrt
 		/* Send the sample for long analysis */
 		os_thread_helper_lock(&ct->long_analysis_thread);
 		if (ct->long_analysis_pending_sample != NULL) {
-			constellation_tracking_sample_free(ct->long_analysis_pending_sample);
+			ct_sample_free(ct, ct->long_analysis_pending_sample);
 		}
 		ct->long_analysis_pending_sample = sample;
 		os_thread_helper_signal_locked(&ct->long_analysis_thread);
 		os_thread_helper_unlock(&ct->long_analysis_thread);
 	} else {
 		/* not sending for long analysis: free it */
-		constellation_tracking_sample_free(sample);
+		ct_sample_free(ct, sample);
 	}
 }
 
@@ -872,7 +890,6 @@ constellation_tracker_process_frame_long(struct t_constellation_tracker *ct,
 {
 	CT_DEBUG(ct, "Starting long analysis of frame TS %" PRIu64, sample->timestamp);
 
-	bool dev_found[CONSTELLATION_MAX_DEVICES] = {0};
 	for (int view_id = 0; view_id < sample->n_views; view_id++) {
 		struct tracking_sample_frame *view = sample->views + view_id;
 		struct constellation_tracker_camera_state *cam = ct->cam + view_id;
@@ -922,7 +939,6 @@ constellation_tracker_process_frame_long(struct t_constellation_tracker *ct,
 					CT_DEBUG(ct, "Found a pose on cam %u device %d long search pass %d", view_id,
 					         device->led_model.id, pass);
 					submit_device_pose(ct, dev_state, sample, view_id, &P_cam_obj);
-					dev_found[d] = true;
 					break;
 				}
 			}
@@ -930,13 +946,16 @@ constellation_tracker_process_frame_long(struct t_constellation_tracker *ct,
 	}
 
 	for (int d = 0; d < sample->n_devices; d++) {
-		if (!dev_found[d]) {
+		// Devices found by the fast path were skipped above, so check the sample's state
+		if (!sample->devices[d].found_device_pose) {
 			// if a long analysis did not find the device at all, then we push that it has no brightness
 			constellation_tracked_device_connection_notify_brightness_update(
 			    ct->devices[sample->devices[d].dev_index].connection, 0);
 
 			// update the controller masks for this controller to mark it as not active
 			if (ct->controller_masks_sink) {
+				// The fast thread also updates and pushes the masks, under tracked_device_lock
+				os_mutex_lock(&ct->tracked_device_lock);
 
 				for (int i = 0; i < ct->cam_count; i++) {
 					struct constellation_tracker_camera_state *cam = &ct->cam[i];
@@ -951,6 +970,7 @@ constellation_tracker_process_frame_long(struct t_constellation_tracker *ct,
 				}
 
 				xrt_sink_push_device_masks(ct->controller_masks_sink, &ct->controller_masks_sample);
+				os_mutex_unlock(&ct->tracked_device_lock);
 			}
 		}
 	}
@@ -982,7 +1002,7 @@ constellation_tracking_long_analysis_thread(void *ptr)
 			constellation_tracker_process_frame_long(ct, sample);
 			uint64_t long_analysis_finish_ts = os_monotonic_get_ns();
 
-			constellation_tracking_sample_free(sample);
+			ct_sample_free(ct, sample);
 
 			ct->last_long_analysis_ms =
 			    (long_analysis_finish_ts - long_analysis_start_ts) / U_TIME_1MS_IN_NS;
@@ -1028,7 +1048,7 @@ constellation_tracker_node_destroy(struct xrt_frame_node *node)
 	/* Clean up any pending sample */
 	os_thread_helper_lock(&ct->long_analysis_thread);
 	if (ct->long_analysis_pending_sample != NULL) {
-		constellation_tracking_sample_free(ct->long_analysis_pending_sample);
+		ct_sample_free(ct, ct->long_analysis_pending_sample);
 		ct->long_analysis_pending_sample = NULL;
 	}
 	os_thread_helper_unlock(&ct->long_analysis_thread);

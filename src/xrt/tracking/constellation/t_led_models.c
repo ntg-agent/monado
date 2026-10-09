@@ -56,6 +56,10 @@ t_constellation_led_model_clear(struct t_constellation_led_model *led_model)
 {
 	free(led_model->leds);
 	led_model->leds = NULL;
+	led_model->num_leds = 0;
+	free(led_model->bounding_points);
+	led_model->bounding_points = NULL;
+	led_model->num_bounding_points = 0;
 }
 
 struct led_candidate_sort_entry
