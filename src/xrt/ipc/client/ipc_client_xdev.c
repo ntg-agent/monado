@@ -214,7 +214,7 @@ ipc_client_xdev_set_output(struct xrt_device *xdev, enum xrt_output_name name, c
 
 	xrt_result_t xret;
 	if (value->type == XRT_OUTPUT_VALUE_TYPE_PCM_VIBRATION) {
-		uint32_t samples_sent = MIN(value->pcm_vibration.sample_rate, 4000);
+		uint32_t samples_sent = MIN(value->pcm_vibration.buffer_size, 4000);
 
 		struct ipc_pcm_haptic_buffer samples = {
 		    .append = value->pcm_vibration.append,
@@ -229,7 +229,10 @@ ipc_client_xdev_set_output(struct xrt_device *xdev, enum xrt_output_name name, c
 
 		xrt_result_t alloc_xret;
 		xret = ipc_receive(&ipc_c->imc, &alloc_xret, sizeof alloc_xret);
-		if (xret != XRT_SUCCESS || alloc_xret != XRT_SUCCESS) {
+		if (xret == XRT_SUCCESS) {
+			xret = alloc_xret;
+		}
+		if (xret != XRT_SUCCESS) {
 			goto send_haptic_output_end;
 		}
 
