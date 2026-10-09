@@ -204,6 +204,11 @@ wait_for_scheduled_free(struct multi_compositor *mc)
 			break;
 		}
 
+		// Don't block forever on a frame that will never be picked up when being stopped.
+		if (!os_thread_helper_is_running(&mc->wait_thread.oth)) {
+			break;
+		}
+
 		U_LOG_D(
 		    "Two frames have completed GPU work and are waiting to be displayed."
 		    "\n\tnext frame: %fms (%" PRIu64
