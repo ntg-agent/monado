@@ -166,6 +166,11 @@ wmr_config_parse_display(struct wmr_hmd_config *c, cJSON *display, enum u_loggin
 			return false;
 		}
 
+		if (param_count != 5) {
+			WMR_ERROR(log_level, "Invalid distortion ModelParameterCount %d, expected 5", param_count);
+			return false;
+		}
+
 		cJSON *params_json = cJSON_GetObjectItemCaseSensitive(dist, "ModelParameters");
 		if (params_json == NULL ||
 		    u_json_get_double_array(params_json, parameters, param_count) != (size_t)param_count) {
