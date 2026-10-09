@@ -1252,7 +1252,7 @@ wmr_read_config_part(struct wmr_hmd *wh, unsigned char type, unsigned char *data
 			break;
 		}
 
-		if (buf[2] > len || offset + buf[2] > len) {
+		if (buf[2] > sizeof(buf) - 3 || buf[2] > len || offset + buf[2] > len) {
 			WMR_ERROR(wh, "Getting more information then requested");
 			return -1;
 		}
@@ -1322,6 +1322,12 @@ wmr_read_config(struct wmr_hmd *wh)
 	if (ret < 0)
 		return ret;
 
+	if (data_size < sizeof(struct wmr_config_header)) {
+		WMR_ERROR(wh, "Invalid WMR config block - too small for header");
+		free(data);
+		return -1;
+	}
+
 	/* De-obfuscate the JSON config */
 	/* FIXME: The header contains little-endian values that need swapping for big-endian */
 	struct wmr_config_header *hdr = (struct wmr_config_header *)data;
@@ -1339,7 +1345,8 @@ wmr_read_config(struct wmr_hmd *wh)
 
 	snprintf(wh->base.str, XRT_DEVICE_NAME_LEN, "%.*s", (int)sizeof(hdr->name), hdr->name);
 
-	if (hdr->json_start >= data_size || (data_size - hdr->json_start) < hdr->json_size) {
+	if (hdr->json_start >= data_size || (data_size - hdr->json_start) < hdr->json_size ||
+	    hdr->json_size < sizeof(uint16_t)) {
 		WMR_ERROR(wh, "Invalid WMR config block - incorrect sizes");
 		free(data);
 		return -1;
