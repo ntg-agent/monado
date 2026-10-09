@@ -17,6 +17,34 @@ target_link_libraries(
 
 install(TARGETS monado-service RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+if(XRT_INSTALL_SERVICE_CAP_SYS_NICE)
+	# Installing replaces the binary, which drops any file capabilities, so
+	# re-apply CAP_SYS_NICE (realtime thread priority) on every install.
+	find_program(SETCAP_EXECUTABLE setcap PATHS /usr/sbin /sbin)
+	if(NOT SETCAP_EXECUTABLE)
+		message(WARNING "XRT_INSTALL_SERVICE_CAP_SYS_NICE is on but setcap was not found")
+	endif()
+	install(
+		CODE "
+		set(_service \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/monado-service\")
+		set(_cmd \"${SETCAP_EXECUTABLE}\" cap_sys_nice=eip \"\${_service}\")
+		if(DEFINED ENV{DESTDIR})
+			message(STATUS \"DESTDIR is set, not running setcap on \${_service}\")
+		else()
+			execute_process(COMMAND \${_cmd} RESULT_VARIABLE _res ERROR_VARIABLE _err)
+			if(_res EQUAL 0)
+				message(STATUS \"Gave \${_service} CAP_SYS_NICE\")
+			else()
+				string(STRIP \"\${_err}\" _err)
+				string(REPLACE \";\" \" \" _cmd_str \"\${_cmd}\")
+				message(WARNING \"Could not give monado-service CAP_SYS_NICE (\${_err}), \"
+					\"it will run without realtime priority. Install as root or run:\\n  sudo \${_cmd_str}\")
+			endif()
+		endif()
+		"
+		)
+endif()
+
 if(XRT_HAVE_SYSTEMD)
 	set(SERVICE_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/monado.in.service")
 	set(SOCKET_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/monado.in.socket")
