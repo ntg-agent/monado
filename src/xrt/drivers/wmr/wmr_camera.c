@@ -447,7 +447,14 @@ drop_frame:
 	xrt_frame_reference(&xf, NULL);
 
 out:
-	libusb_submit_transfer(xfer);
+	if (xfer->status == LIBUSB_TRANSFER_CANCELLED || xfer->status == LIBUSB_TRANSFER_NO_DEVICE || !cam->running) {
+		return;
+	}
+
+	int res = libusb_submit_transfer(xfer);
+	if (res < 0) {
+		WMR_CAM_ERROR(cam, "Failed to resubmit camera transfer: %s", libusb_error_name(res));
+	}
 }
 
 
@@ -657,6 +664,8 @@ wmr_camera_start(struct wmr_camera *cam)
 	if (res < 0) {
 		goto fail;
 	}
+
+	cam->running = true;
 
 	for (int i = 0; i < NUM_XFERS; i++) {
 		uint8_t *recv_buf = malloc(cam->xfer_size);
