@@ -277,12 +277,8 @@ ipc_client_hmd_get_brightness(struct xrt_device *xdev, float *out_brightness)
 	struct ipc_connection *ipc_c = ich->ipc_c;
 	xrt_result_t xret;
 
-	ipc_client_connection_lock(ipc_c);
-
 	xret = ipc_call_device_get_brightness(ipc_c, ich->device_id, out_brightness);
 	IPC_CHK_ONLY_PRINT(ipc_c, xret, "ipc_call_device_get_brightness");
-
-	ipc_client_connection_unlock(ipc_c);
 
 	return xret;
 }
@@ -294,12 +290,8 @@ ipc_client_hmd_set_brightness(struct xrt_device *xdev, float brightness, bool re
 	struct ipc_connection *ipc_c = ich->ipc_c;
 	xrt_result_t xret;
 
-	ipc_client_connection_lock(ipc_c);
-
 	xret = ipc_call_device_set_brightness(ipc_c, ich->device_id, brightness, relative);
 	IPC_CHK_ONLY_PRINT(ipc_c, xret, "ipc_call_device_set_brightness");
-
-	ipc_client_connection_unlock(ipc_c);
 
 	return xret;
 }
