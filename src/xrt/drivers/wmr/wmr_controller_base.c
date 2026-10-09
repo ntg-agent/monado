@@ -100,6 +100,7 @@ wmr_controller_base_imu_sample(struct wmr_controller_base *wcb,
 		// Reinit. The 3dof fusion will assert if time goes backward
 		wcb->last_imu_timestamp_ns = 0;
 		wcb->last_imu_device_timestamp_ns = 0;
+		wcb->last_angular_velocity = (struct xrt_vec3){0, 0, 0};
 		m_imu_3dof_init(&wcb->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
 		m_clock_windowed_skew_tracker_reset(wcb->hw2mono_clock);
 		m_clock_windowed_skew_tracker_push(wcb->hw2mono_clock, rx_mono_ns, now_hw_ns);
