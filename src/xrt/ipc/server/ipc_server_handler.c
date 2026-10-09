@@ -1180,7 +1180,7 @@ do_single(struct xrt_compositor *xc,
 	return XRT_SUCCESS;
 }
 
-static bool
+static xrt_result_t
 _update_quad_layer(struct xrt_compositor *xc,
                    volatile struct ipc_client_state *ics,
                    volatile struct ipc_layer_entry *layer,
@@ -1196,7 +1196,7 @@ _update_quad_layer(struct xrt_compositor *xc,
 	return xrt_comp_layer_quad(xc, xdev, xcs, data);
 }
 
-static bool
+static xrt_result_t
 _update_cube_layer(struct xrt_compositor *xc,
                    volatile struct ipc_client_state *ics,
                    volatile struct ipc_layer_entry *layer,
@@ -1212,7 +1212,7 @@ _update_cube_layer(struct xrt_compositor *xc,
 	return xrt_comp_layer_cube(xc, xdev, xcs, data);
 }
 
-static bool
+static xrt_result_t
 _update_cylinder_layer(struct xrt_compositor *xc,
                        volatile struct ipc_client_state *ics,
                        volatile struct ipc_layer_entry *layer,
@@ -1228,7 +1228,7 @@ _update_cylinder_layer(struct xrt_compositor *xc,
 	return xrt_comp_layer_cylinder(xc, xdev, xcs, data);
 }
 
-static bool
+static xrt_result_t
 _update_equirect1_layer(struct xrt_compositor *xc,
                         volatile struct ipc_client_state *ics,
                         volatile struct ipc_layer_entry *layer,
@@ -1244,7 +1244,7 @@ _update_equirect1_layer(struct xrt_compositor *xc,
 	return xrt_comp_layer_equirect1(xc, xdev, xcs, data);
 }
 
-static bool
+static xrt_result_t
 _update_equirect2_layer(struct xrt_compositor *xc,
                         volatile struct ipc_client_state *ics,
                         volatile struct ipc_layer_entry *layer,
@@ -1278,7 +1278,7 @@ _update_passthrough_layer(struct xrt_compositor *xc,
 	return xrt_comp_layer_passthrough(xc, xdev, data);
 }
 
-static bool
+static xrt_result_t
 _update_layers(volatile struct ipc_client_state *ics, struct ipc_layer_slot *slot)
 {
 	IPC_TRACE_MARKER();
