@@ -66,6 +66,10 @@ swapchain_inc_image_use(struct xrt_swapchain *xsc, uint32_t index)
 {
 	struct comp_swapchain *sc = comp_swapchain(xsc);
 
+	if (index >= sc->base.base.image_count) {
+		return XRT_ERROR_INVALID_ARGUMENT;
+	}
+
 	SWAPCHAIN_TRACE_BEGIN(swapchain_inc_image_use);
 
 	VK_TRACE(sc->vk, "%p INC_IMAGE %d (use %d)", (void *)sc, index, sc->images[index].use_count);
@@ -83,6 +87,10 @@ static xrt_result_t
 swapchain_dec_image_use(struct xrt_swapchain *xsc, uint32_t index)
 {
 	struct comp_swapchain *sc = comp_swapchain(xsc);
+
+	if (index >= sc->base.base.image_count) {
+		return XRT_ERROR_INVALID_ARGUMENT;
+	}
 
 	SWAPCHAIN_TRACE_BEGIN(swapchain_dec_image_use);
 
@@ -109,6 +117,10 @@ swapchain_wait_image(struct xrt_swapchain *xsc, int64_t timeout_ns, uint32_t ind
 {
 	struct comp_swapchain *sc = comp_swapchain(xsc);
 
+	if (index >= sc->base.base.image_count) {
+		return XRT_ERROR_INVALID_ARGUMENT;
+	}
+
 	SWAPCHAIN_TRACE_BEGIN(swapchain_wait_image);
 
 	VK_TRACE(sc->vk, "%p WAIT_IMAGE %d (use %d)", (void *)sc, index, sc->images[index].use_count);
@@ -126,6 +138,11 @@ swapchain_wait_image(struct xrt_swapchain *xsc, int64_t timeout_ns, uint32_t ind
 	int64_t start_wait_rt = os_realtime_get_ns();
 
 	int64_t end_wait_rt;
+	// A negative timeout would overflow below, treat it as no wait.
+	if (timeout_ns < 0) {
+		timeout_ns = 0;
+	}
+
 	// don't wrap on big or indefinite timeout
 	if (start_wait_rt > INT64_MAX - timeout_ns) {
 		end_wait_rt = INT64_MAX;
@@ -201,6 +218,10 @@ static xrt_result_t
 swapchain_release_image(struct xrt_swapchain *xsc, uint32_t index)
 {
 	struct comp_swapchain *sc = comp_swapchain(xsc);
+
+	if (index >= sc->base.base.image_count) {
+		return XRT_ERROR_INVALID_ARGUMENT;
+	}
 
 	VK_TRACE(sc->vk, "RELEASE_IMAGE");
 
