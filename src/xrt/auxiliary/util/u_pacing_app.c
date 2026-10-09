@@ -218,7 +218,7 @@ point_to_str(enum u_timing_point point)
 #define DEBUG_PRINT_ID_FRAME_POINT(ID, F, P)                                                                           \
 	UPA_LOG_T("%" PRIi64 " (%" PRIi64 ", %s) %s", frame_id, F->frame_id, state_to_str(F->state), point_to_str(P));
 
-#define GET_INDEX_FROM_ID(RT, ID) ((int64_t)(ID) % FRAME_COUNT)
+#define GET_INDEX_FROM_ID(RT, ID) ((uint64_t)(ID) % FRAME_COUNT)
 
 #define IIR_ALPHA_LT 0.8
 #define IIR_ALPHA_GT 0.8
@@ -552,7 +552,10 @@ pa_mark_point(struct u_pacing_app *upa, int64_t frame_id, enum u_timing_point po
 
 	DEBUG_PRINT_ID_FRAME_POINT(frame_id, f, point);
 
-	assert(f->frame_id == frame_id);
+	if (f->frame_id != frame_id) {
+		UPA_LOG_W("Ignoring unknown frame id %" PRIi64 " (slot has %" PRIi64 ")", frame_id, f->frame_id);
+		return;
+	}
 
 	switch (point) {
 	case U_TIMING_POINT_WAKE_UP:
@@ -583,7 +586,10 @@ pa_mark_discarded(struct u_pacing_app *upa, int64_t frame_id, int64_t when_ns)
 
 	DEBUG_PRINT_ID_FRAME(frame_id, f);
 
-	assert(f->frame_id == frame_id);
+	if (f->frame_id != frame_id) {
+		UPA_LOG_W("Ignoring unknown frame id %" PRIi64 " (slot has %" PRIi64 ")", frame_id, f->frame_id);
+		return;
+	}
 	assert(f->state == U_RT_WAIT_LEFT || f->state == U_RT_BEGUN);
 
 	// Update all data.
@@ -608,7 +614,10 @@ pa_mark_delivered(struct u_pacing_app *upa, int64_t frame_id, int64_t when_ns, i
 
 	DEBUG_PRINT_ID_FRAME(frame_id, f);
 
-	assert(f->frame_id == frame_id);
+	if (f->frame_id != frame_id) {
+		UPA_LOG_W("Ignoring unknown frame id %" PRIi64 " (slot has %" PRIi64 ")", frame_id, f->frame_id);
+		return;
+	}
 	assert(f->state == U_RT_BEGUN);
 
 	// Update all data.
@@ -627,7 +636,10 @@ pa_mark_gpu_done(struct u_pacing_app *upa, int64_t frame_id, int64_t when_ns)
 
 	DEBUG_PRINT_ID_FRAME(frame_id, f);
 
-	assert(f->frame_id == frame_id);
+	if (f->frame_id != frame_id) {
+		UPA_LOG_W("Ignoring unknown frame id %" PRIi64 " (slot has %" PRIi64 ")", frame_id, f->frame_id);
+		return;
+	}
 	assert(f->state == U_RT_DELIVERED);
 
 	// Update all data.
@@ -802,9 +814,12 @@ pa_create(int64_t session_id, struct u_pacing_app **out_upa)
 static xrt_result_t
 paf_create(struct u_pacing_app_factory *upaf, struct u_pacing_app **out_upa)
 {
-	static int64_t session_id_gen = 0; // For now until global session id is introduced.
+	static xrt_atomic_s64_t session_id_gen = 0; // For now until global session id is introduced.
 
-	return pa_create(session_id_gen++, out_upa);
+	// Returns the incremented value, subtract one so ids start at zero.
+	int64_t session_id = xrt_atomic_s64_inc_return(&session_id_gen) - 1;
+
+	return pa_create(session_id, out_upa);
 }
 
 static void
