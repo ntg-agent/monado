@@ -1173,6 +1173,15 @@ comp_renderer_draw(struct comp_renderer *r)
 		res = dispatch_graphics(r, &render_g, &frame_state, fov_source);
 	}
 	if (res != VK_SUCCESS) {
+		// Clean up so the next draw starts from a valid state.
+		comp_frame_clear_locked(&c->frame.rendering);
+		renderer_wait_queue_idle(r);
+		chl_frame_state_fini(&frame_state);
+		if (use_compute) {
+			render_compute_fini(&render_c);
+		} else {
+			render_gfx_fini(&render_g);
+		}
 		return XRT_ERROR_VULKAN;
 	}
 
