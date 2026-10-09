@@ -2031,8 +2031,15 @@ wmr_hmd_setup_trackers(struct wmr_hmd *wh, struct xrt_slam_sinks *out_sinks, str
 	if (wh->tracking.slam_enabled) {
 		slam_sinks = wmr_hmd_slam_track(wh);
 		if (slam_sinks == NULL) {
-			WMR_WARN(wh, "Unable to setup the SLAM tracker");
-			return false;
+			// Don't fail device creation, fall back to 3DoF tracking instead
+			WMR_WARN(wh, "Unable to setup the SLAM tracker, falling back to 3DoF tracking");
+			slam_enabled = false;
+			wh->tracking.slam_enabled = false;
+			wh->slam_over_3dof = false;
+			wh->base.supported.orientation_tracking = true;
+			wh->base.supported.position_tracking = false;
+			(void)snprintf(wh->gui.slam_status, sizeof(wh->gui.slam_status), "%s",
+			               "Failed to load (3DoF fallback)");
 		}
 	}
 
@@ -2418,11 +2425,12 @@ wmr_hmd_create(enum wmr_headset_type hmd_type,
 	// Stream data source into sinks (if populated)
 	bool stream_started = xrt_fs_slam_stream_start(wh->tracking.source, &sinks);
 	if (!stream_started) {
-		//! @todo Could reach this due to !XRT_HAVE_LIBUSB but the HMD should keep working
-		WMR_WARN(wh, "Failed to start WMR source");
-		wmr_hmd_destroy(&wh->base);
-		wh = NULL;
-		return;
+		// Could reach this due to !XRT_HAVE_LIBUSB or missing USB permissions, keep the HMD working in 3DoF
+		WMR_WARN(wh, "Failed to start WMR source, cameras unavailable: falling back to 3DoF tracking");
+		wh->tracking.slam_enabled = false;
+		wh->slam_over_3dof = false;
+		wh->base.supported.orientation_tracking = true;
+		wh->base.supported.position_tracking = false;
 	}
 
 	// Hand over hololens sensor device to reading thread.

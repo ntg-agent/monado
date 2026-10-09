@@ -198,6 +198,10 @@ wmr_source_stream_stop(struct xrt_fs *xfs)
 
 	struct wmr_source *ws = wmr_source_from_xfs(xfs);
 
+	if (ws->camera == NULL) { // Camera failed to open, nothing to stop
+		return true;
+	}
+
 	bool stopped = wmr_camera_stop(ws->camera);
 	if (!stopped) {
 		WMR_ERROR(ws, "Unable to stop WMR cameras");
@@ -234,6 +238,11 @@ wmr_source_stream_start(struct xrt_fs *xfs,
 		ws->out_sinks.cams[0] = xs;
 	} else {
 		WMR_ASSERT(false, "Unsupported stream configuration xs=%p capture_type=%d", (void *)xs, capture_type);
+		return false;
+	}
+
+	if (ws->camera == NULL) {
+		WMR_ERROR(ws, "WMR cameras are not available (failed to open, check USB permissions/udev rules)");
 		return false;
 	}
 
