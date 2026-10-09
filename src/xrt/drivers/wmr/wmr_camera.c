@@ -739,11 +739,13 @@ update_expgain(struct wmr_camera *cam, struct xrt_frame **frames)
 		ceg->last_exposure = ceg->exposure;
 		ceg->last_gain = ceg->gain;
 
-		bool status = wmr_camera_set_exposure_gain(cam, config->location, ceg->exposure, ceg->gain);
-		if (status != 0) {
+		int status = wmr_camera_set_exposure_gain(cam, config->location, ceg->exposure, ceg->gain);
+		if (status < 0) {
 			WMR_CAM_ERROR(cam, "Failed to set exposure and gain for camera %d", i);
+			if (res == 0) {
+				res = status; // Report the first error
+			}
 		}
-		res |= status;
 	}
 	return res;
 }
