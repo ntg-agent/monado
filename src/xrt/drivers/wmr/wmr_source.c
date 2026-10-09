@@ -291,6 +291,13 @@ wmr_source_node_destroy(struct xrt_frame_node *node)
 
 	struct wmr_source *ws = container_of(node, struct wmr_source, node);
 	WMR_DEBUG(ws, "Destroying WMR source");
+
+	// Stop the USB thread first, its callbacks push to the sinks destroyed below.
+	if (ws->camera != NULL) { // It could be null if XRT_HAVE_LIBUSB is not defined
+		wmr_camera_free(ws->camera);
+		ws->camera = NULL;
+	}
+
 	for (int i = 0; i < ws->config.sinks_count; i++) {
 		u_sink_debug_destroy(&ws->ui_cam_sinks[i]);
 	}
@@ -299,9 +306,6 @@ wmr_source_node_destroy(struct xrt_frame_node *node)
 		m_ff_vec3_f32_free(&ws->accel_ffs[i]);
 	}
 	u_var_remove_root(ws);
-	if (ws->camera != NULL) { // It could be null if XRT_HAVE_LIBUSB is not defined
-		wmr_camera_free(ws->camera);
-	}
 	free(ws);
 }
 
