@@ -210,6 +210,8 @@ feature_inc(struct xrt_system_devices *xsysd, enum xrt_device_feature_type type)
 		xret = XRT_ERROR_FEATURE_NOT_SUPPORTED;
 	}
 	if (xret != XRT_SUCCESS) {
+		// Failed to enable, drop our reference so a later call retries.
+		xrt_reference_dec(&bsysds->feature_use[type]);
 		return xret;
 	}
 
