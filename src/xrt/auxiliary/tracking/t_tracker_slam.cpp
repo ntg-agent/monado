@@ -762,6 +762,7 @@ flush_poses(TrackerSlam &t)
 		vres = t.vit.pose_get_data(pose, &data);
 		if (vres != VIT_SUCCESS) {
 			SLAM_ERROR("Failed to get pose data from VIT tracker");
+			t.vit.pose_destroy(pose);
 			return false;
 		}
 
