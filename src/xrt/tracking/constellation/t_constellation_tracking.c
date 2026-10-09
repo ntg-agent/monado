@@ -964,32 +964,40 @@ constellation_tracker_process_frame_long(struct t_constellation_tracker *ct,
 
 	for (int d = 0; d < sample->n_devices; d++) {
 		// Devices found by the fast path were skipped above, so check the sample's state
-		if (!sample->devices[d].found_device_pose) {
-			// if a long analysis did not find the device at all, then we push that it has no brightness
-			constellation_tracked_device_connection_notify_brightness_update(
-			    ct->devices[sample->devices[d].dev_index].connection, 0);
-
-			// update the controller masks for this controller to mark it as not active
-			if (ct->controller_masks_sink) {
-				// The fast thread also updates and pushes the masks, under tracked_device_lock
-				os_mutex_lock(&ct->tracked_device_lock);
-
-				for (int i = 0; i < ct->cam_count; i++) {
-					struct constellation_tracker_camera_state *cam = &ct->cam[i];
-
-					struct xrt_device_masks_sample_camera *sample_camera =
-					    &ct->controller_masks_sample.views[cam->slam_tracking_index];
-
-					struct xrt_device_masks_sample_device *device_mask =
-					    &sample_camera->devices[sample->devices[d].dev_index];
-
-					device_mask->enabled = false;
-				}
-
-				xrt_sink_push_device_masks(ct->controller_masks_sink, &ct->controller_masks_sample);
-				os_mutex_unlock(&ct->tracked_device_lock);
-			}
+		if (sample->devices[d].found_device_pose) {
+			continue;
 		}
+
+		struct constellation_tracker_device *device = ct->devices + sample->devices[d].dev_index;
+
+		// The fast thread may have found the device in a newer frame while the long search ran. Only
+		// report the device as lost if no newer pose has been seen, otherwise we'd clobber it.
+		os_mutex_lock(&ct->tracked_device_lock);
+		if (device->have_last_seen_pose && sample->timestamp < device->last_seen_pose_ts) {
+			os_mutex_unlock(&ct->tracked_device_lock);
+			continue;
+		}
+
+		// if a long analysis did not find the device at all, then we push that it has no brightness
+		constellation_tracked_device_connection_notify_brightness_update(device->connection, 0);
+
+		// update the controller masks for this controller to mark it as not active
+		if (ct->controller_masks_sink) {
+			for (int i = 0; i < ct->cam_count; i++) {
+				struct constellation_tracker_camera_state *cam = &ct->cam[i];
+
+				struct xrt_device_masks_sample_camera *sample_camera =
+				    &ct->controller_masks_sample.views[cam->slam_tracking_index];
+
+				struct xrt_device_masks_sample_device *device_mask =
+				    &sample_camera->devices[sample->devices[d].dev_index];
+
+				device_mask->enabled = false;
+			}
+
+			xrt_sink_push_device_masks(ct->controller_masks_sink, &ct->controller_masks_sample);
+		}
+		os_mutex_unlock(&ct->tracked_device_lock);
 	}
 }
 
