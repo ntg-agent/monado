@@ -169,8 +169,11 @@ struct wmr_hmd
 	{
 		struct u_var_button hmd_screen_enable_btn;
 		struct u_var_button switch_tracker_btn;
+		struct u_var_button pair_left_btn;
+		struct u_var_button pair_right_btn;
 		char hand_status[128];
 		char slam_status[128];
+		char pairing_status[128];
 	} gui;
 
 	/* Tunnelled controller devices (Reverb G2, Odyssey+) handling */
@@ -178,6 +181,29 @@ struct wmr_hmd
 	struct os_cond controller_status_cond;
 	bool have_left_controller_status;
 	bool have_right_controller_status;
+	//! Last controller status reported per slot, see WMR_CONTROLLER_STATUS_*. Protected by controller_status_lock.
+	uint8_t controller_status[WMR_MAX_CONTROLLERS];
+
+	//! Pairing a controller to the HMD radio, driven from the reader thread. Protected by controller_status_lock.
+	struct
+	{
+		//! Controller slot being paired (0 left, 1 right), or -1 when not pairing.
+		int controller_no;
+		//! Current step, see enum wmr_pairing_phase in wmr_hmd.c.
+		int phase;
+		//! Whether the other slot holds a controller, which will need pairing again too.
+		bool other_occupied;
+		//! BT control message to send on the next reader thread tick, or 0 to just poll.
+		uint8_t pending_msg;
+		//! Last pairing status reported by the HMD, see @ref wmr_bt_pairing_status.
+		int status;
+		//! Which controllers (0 left, 1 right) the radio's search found, from its debug log.
+		bool found[2];
+		int64_t next_poll_ns;
+		int64_t deadline_ns;
+		//! Don't send pairing commands before this time: the HMD must settle after activation.
+		int64_t not_before_ns;
+	} pairing;
 
 	struct wmr_hmd_controller_connection *controller[WMR_MAX_CONTROLLERS];
 };
