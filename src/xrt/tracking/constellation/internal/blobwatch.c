@@ -272,26 +272,29 @@ process_scanline(uint8_t *line,
                  struct xrt_frame *frame,
                  blobservation *ob)
 {
-	struct extent *le_end = prev_el->extents;
-	struct extent *le = prev_el->extents;
+	struct extent *le_end = NULL;
+	struct extent *le = NULL;
 	struct extent *extent = el->extents;
 	int num_extents = MAX_EXTENTS_PER_LINE;
 	float center;
 	uint32_t x;
 	int e = 0;
 
-	if (prev_el)
-		le_end += prev_el->num;
+	if (prev_el) {
+		le = prev_el->extents;
+		le_end = prev_el->extents + prev_el->num;
+	}
 
 	for (x = 0; x < frame->width; x++) {
 		int start, end;
 		bool is_new_extent = true;
-		uint8_t max_pixel = 0;
+		uint8_t max_pixel;
 
 		/* Loop until pixel value exceeds threshold */
 		if (line[x] <= bw->pixel_threshold)
 			continue;
 
+		max_pixel = line[x];
 		start = x++;
 
 		/* Loop until pixel value falls below threshold */
@@ -316,7 +319,7 @@ process_scanline(uint8_t *line,
 			 * bottom of finished blobs. Store them into an array.
 			 */
 			while (le < le_end && le->end < center) {
-				extent_to_blobs(bw, ob, le, y, frame);
+				extent_to_blobs(bw, ob, le, y - 1, frame);
 				le++;
 			}
 
@@ -357,7 +360,7 @@ process_scanline(uint8_t *line,
 		 * extents in the previous line are finished blobs. Store them.
 		 */
 		while (le < le_end) {
-			extent_to_blobs(bw, ob, le, y, frame);
+			extent_to_blobs(bw, ob, le, y - 1, frame);
 			le++;
 		}
 	}
@@ -385,12 +388,15 @@ process_frame(blobwatch *bw, blobservation *ob, struct xrt_frame *frame)
 	ob->num_blobs = 0;
 	ob->dropped_dark_blobs = 0;
 
+	/* Tracked slots are rebuilt from scratch for each frame (observations are recycled) */
+	memset(ob->tracked, 0, sizeof(ob->tracked));
+
 	uint8_t *line = frame->data;
 	process_scanline(line, bw, 0, &el1, NULL, frame, ob);
 
 	for (uint32_t y = 1; y < frame->height; y++) {
-		process_scanline(line, bw, y, y & 1 ? &el2 : &el1, y & 1 ? &el1 : &el2, frame, ob);
 		line += frame->stride;
+		process_scanline(line, bw, y, y & 1 ? &el2 : &el1, y & 1 ? &el1 : &el2, frame, ob);
 	}
 }
 
