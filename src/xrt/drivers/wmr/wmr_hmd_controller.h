@@ -44,7 +44,15 @@ wmr_hmd_controller_create(struct wmr_hmd *hmd,
                           enum xrt_device_type controller_type,
                           uint16_t vid,
                           uint16_t pid,
+                          bool start,
                           enum u_logging_level log_level);
+
+/*!
+ * Initialise the controller hardware once it is online, if that wasn't done at creation (see
+ * wmr_controller_base_start()). Called from the HMD reader thread.
+ */
+bool
+wmr_hmd_controller_connection_start(struct wmr_hmd_controller_connection *conn);
 
 struct xrt_device *
 wmr_hmd_controller_connection_get_controller(struct wmr_hmd_controller_connection *wcc);

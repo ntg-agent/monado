@@ -31,6 +31,7 @@ wmr_controller_create(struct wmr_controller_connection *conn,
                       enum xrt_device_type controller_type,
                       uint16_t vid,
                       uint16_t pid,
+                      bool start,
                       enum u_logging_level log_level,
                       struct xrt_fs *src)
 {
@@ -43,6 +44,12 @@ wmr_controller_create(struct wmr_controller_connection *conn,
 	case ODYSSEY_CONTROLLER_PID: ret = wmr_controller_og_create(conn, controller_type, pid, log_level, src); break;
 	case REVERB_G2_CONTROLLER_PID: ret = wmr_controller_hp_create(conn, controller_type, log_level, src); break;
 	default: break;
+	}
+
+	if (ret != NULL && start && !wmr_controller_base_start(ret)) {
+		struct xrt_device *xdev = &ret->base;
+		xrt_device_destroy(&xdev);
+		ret = NULL;
 	}
 
 	return ret;

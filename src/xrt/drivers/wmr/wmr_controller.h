@@ -15,10 +15,17 @@
 #include "wmr_controller_base.h"
 #include "xrt/xrt_frameserver.h"
 
+/*!
+ * Create a controller device. With @p start, the controller hardware is also initialised (see
+ * wmr_controller_base_start()), which needs the controller to be online. Without it, the device is
+ * created without talking to the controller, and wmr_controller_base_start() must be called once
+ * the controller comes online.
+ */
 struct wmr_controller_base *
 wmr_controller_create(struct wmr_controller_connection *conn,
                       enum xrt_device_type controller_type,
                       uint16_t vid,
                       uint16_t pid,
+                      bool start,
                       enum u_logging_level log_level,
                       struct xrt_fs *src);

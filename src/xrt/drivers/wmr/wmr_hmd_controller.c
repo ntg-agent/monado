@@ -129,6 +129,7 @@ wmr_hmd_controller_create(struct wmr_hmd *hmd,
                           enum xrt_device_type controller_type,
                           uint16_t vid,
                           uint16_t pid,
+                          bool start,
                           enum u_logging_level log_level)
 {
 	DRV_TRACE_MARKER();
@@ -161,7 +162,7 @@ wmr_hmd_controller_create(struct wmr_hmd *hmd,
 	// Takes ownership of one reference to the connection, the other will
 	// belong to the returned pointer
 	struct wmr_controller_base *wcb =
-	    wmr_controller_create(&conn->base, controller_type, vid, pid, log_level, hmd->tracking.source);
+	    wmr_controller_create(&conn->base, controller_type, vid, pid, start, log_level, hmd->tracking.source);
 	if (wcb == NULL) {
 		WMR_ERROR(conn, "WMR Controller (Tunnelled): Failed to create controller");
 		wmr_hmd_controller_connection_destroy(conn);
@@ -173,6 +174,25 @@ wmr_hmd_controller_create(struct wmr_hmd *hmd,
 	conn->base.wcb = wcb;
 
 	return conn;
+}
+
+bool
+wmr_hmd_controller_connection_start(struct wmr_hmd_controller_connection *conn)
+{
+	DRV_TRACE_MARKER();
+
+	os_mutex_lock(&conn->lock);
+	struct wmr_controller_base *wcb = conn->disconnected ? NULL : conn->base.wcb;
+	os_mutex_unlock(&conn->lock);
+
+	if (wcb == NULL) {
+		return false;
+	}
+
+	/* Don't hold the lock: starting sends and reads through this connection, which takes it.
+	 * The controller device can't be destroyed meanwhile: the HMD is destroyed first, which
+	 * stops the reader thread this is called from. */
+	return wmr_controller_base_start(wcb);
 }
 
 struct xrt_device *
