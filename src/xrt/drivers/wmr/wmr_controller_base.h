@@ -118,6 +118,13 @@ struct wmr_controller_base
 	                            uint8_t *buffer,
 	                            uint32_t buf_size);
 
+	/*!
+	 * Set once wmr_controller_base_start() has initialised the controller hardware. Until then the
+	 * device exists (so it can be listed before the controller is switched on) but has no data.
+	 * Protected by data_lock.
+	 */
+	bool started;
+
 	/* firmware configuration block */
 	struct wmr_controller_config config;
 
@@ -136,6 +143,14 @@ wmr_controller_base_init(struct wmr_controller_base *wcb,
                          enum u_logging_level log_level,
                          u_device_destroy_function_t destroy_fn,
                          struct xrt_fs *src);
+
+/*!
+ * Initialise the controller hardware: reset it, read its configuration and turn on its reports.
+ * Must be called after wmr_controller_base_init() once the controller is online. Does nothing
+ * and returns true if the controller was already started.
+ */
+bool
+wmr_controller_base_start(struct wmr_controller_base *wcb);
 
 void
 wmr_controller_base_deinit(struct wmr_controller_base *wcb);

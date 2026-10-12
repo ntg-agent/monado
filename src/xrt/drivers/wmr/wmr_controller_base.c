@@ -71,6 +71,11 @@ receive_bytes(struct wmr_controller_base *wcb, uint64_t time_ns, uint8_t *buffer
 	switch (buffer[0]) {
 	case WMR_MOTION_CONTROLLER_STATUS_MSG:
 		os_mutex_lock(&wcb->data_lock);
+		if (!wcb->started) {
+			// Not initialised yet (see wmr_controller_base_start()), the reports aren't ours to handle.
+			os_mutex_unlock(&wcb->data_lock);
+			return;
+		}
 		// Note: skipping msg type byte
 		bool b = wcb->handle_input_packet(wcb, time_ns, &buffer[1], (size_t)buf_size - 1);
 		os_mutex_unlock(&wcb->data_lock);
@@ -479,6 +484,15 @@ wmr_controller_base_get_tracked_pose(struct xrt_device *xdev,
 
 	struct wmr_controller_base *wcb = wmr_controller_base(xdev);
 
+	os_mutex_lock(&wcb->data_lock);
+	bool started = wcb->started;
+	os_mutex_unlock(&wcb->data_lock);
+	if (!started) {
+		// The controller hasn't come online yet, so there is no pose to report.
+		*out_relation = (struct xrt_space_relation)XRT_SPACE_RELATION_ZERO;
+		return XRT_SUCCESS;
+	}
+
 	// Variables needed for prediction.
 	int64_t last_imu_timestamp_ns = 0;
 	struct xrt_space_relation relation = {0};
@@ -616,6 +630,21 @@ wmr_controller_base_init(struct wmr_controller_base *wcb,
 
 	u_var_add_root(wcb, wcb->base.str, true);
 
+	return true;
+}
+
+bool
+wmr_controller_base_start(struct wmr_controller_base *wcb)
+{
+	DRV_TRACE_MARKER();
+
+	os_mutex_lock(&wcb->data_lock);
+	bool started = wcb->started;
+	os_mutex_unlock(&wcb->data_lock);
+	if (started) {
+		return true;
+	}
+
 	/* Send init commands */
 	struct wmr_controller_fw_cmd fw_cmd = {
 	    0,
@@ -646,6 +675,10 @@ wmr_controller_base_init(struct wmr_controller_base *wcb,
 	wmr_controller_send_bytes(wcb, wmr_controller_status_enable_cmd, sizeof(wmr_controller_status_enable_cmd));
 	const unsigned char wmr_controller_imu_on_cmd[64] = {0x06, 0x03, 0x02, 0xe1, 0x02};
 	wmr_controller_send_bytes(wcb, wmr_controller_imu_on_cmd, sizeof(wmr_controller_imu_on_cmd));
+
+	os_mutex_lock(&wcb->data_lock);
+	wcb->started = true;
+	os_mutex_unlock(&wcb->data_lock);
 
 	return true;
 }

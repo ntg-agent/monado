@@ -204,15 +204,8 @@ hololens_sensors_decode_packet(struct wmr_hmd *wh,
 }
 
 static void
-hololens_ensure_controller(struct wmr_hmd *wh, uint8_t controller_id, uint16_t vid, uint16_t pid)
+hololens_create_controller(struct wmr_hmd *wh, uint8_t controller_id, uint16_t vid, uint16_t pid, bool start)
 {
-	if (controller_id >= WMR_MAX_CONTROLLERS)
-		return;
-
-	if (wh->controller[controller_id] != NULL) {
-		return;
-	}
-
 	WMR_DEBUG(wh, "Adding controller device %d", controller_id);
 
 	enum xrt_device_type controller_type =
@@ -220,11 +213,35 @@ hololens_ensure_controller(struct wmr_hmd *wh, uint8_t controller_id, uint16_t v
 	uint8_t hmd_cmd_base = controller_id == 0 ? 0x5 : 0xd;
 
 	struct wmr_hmd_controller_connection *controller =
-	    wmr_hmd_controller_create(wh, hmd_cmd_base, controller_type, vid, pid, wh->log_level);
+	    wmr_hmd_controller_create(wh, hmd_cmd_base, controller_type, vid, pid, start, wh->log_level);
 
 	os_mutex_lock(&wh->controller_status_lock);
 	wh->controller[controller_id] = controller;
+	wh->controller_pid[controller_id] = pid;
 	os_mutex_unlock(&wh->controller_status_lock);
+}
+
+//! Called from the reader thread when a controller reports that it is online.
+static void
+hololens_ensure_controller(struct wmr_hmd *wh, uint8_t controller_id, uint16_t vid, uint16_t pid)
+{
+	if (controller_id >= WMR_MAX_CONTROLLERS)
+		return;
+
+	if (wh->controller[controller_id] == NULL) {
+		hololens_create_controller(wh, controller_id, vid, pid, true);
+		return;
+	}
+
+	// The device was created before the controller came online, initialise the controller now.
+	if (wh->controller_pid[controller_id] != pid) {
+		WMR_WARN(wh, "Controller %d has PID 0x%04x, but its device was set up for PID 0x%04x", controller_id,
+		         pid, wh->controller_pid[controller_id]);
+		wh->controller_pid[controller_id] = pid;
+	}
+	if (!wmr_hmd_controller_connection_start(wh->controller[controller_id])) {
+		WMR_WARN(wh, "Failed to initialise controller %d, will retry on its next status report", controller_id);
+	}
 }
 
 /*
@@ -2449,6 +2466,19 @@ wmr_hmd_create(enum wmr_headset_type hmd_type,
 		wh->slam_over_3dof = false;
 		wh->base.supported.orientation_tracking = true;
 		wh->base.supported.position_tracking = false;
+	}
+
+	/* The controllers of the Reverb G2 and Odyssey+ connect through the HMD's radio, and may only be
+	 * switched on after we started. The device list is fixed at startup, so create both controller
+	 * devices now and initialise each controller when it reports that it is online (see
+	 * hololens_ensure_controller()). This happens before the reader thread starts, so it can't race
+	 * with the reader creating a controller. */
+	if (wh->hmd_desc->hmd_type == WMR_HEADSET_REVERB_G2 || wh->hmd_desc->hmd_type == WMR_HEADSET_SAMSUNG_800ZAA) {
+		uint16_t pid =
+		    wh->hmd_desc->hmd_type == WMR_HEADSET_REVERB_G2 ? REVERB_G2_CONTROLLER_PID : ODYSSEY_CONTROLLER_PID;
+		for (uint8_t i = 0; i < WMR_MAX_CONTROLLERS; i++) {
+			hololens_create_controller(wh, i, MICROSOFT_VID, pid, false);
+		}
 	}
 
 	// Hand over hololens sensor device to reading thread.

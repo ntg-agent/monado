@@ -206,6 +206,8 @@ struct wmr_hmd
 	} pairing;
 
 	struct wmr_hmd_controller_connection *controller[WMR_MAX_CONTROLLERS];
+	//! The controller PID each controller device was created for. Protected by controller_status_lock.
+	uint16_t controller_pid[WMR_MAX_CONTROLLERS];
 };
 
 static inline struct wmr_hmd *
