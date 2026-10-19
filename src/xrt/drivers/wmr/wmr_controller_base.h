@@ -17,6 +17,10 @@
 #include "os/os_threading.h"
 #include "math/m_clock_tracking.h"
 #include "math/m_imu_3dof.h"
+#include "math/m_imu_position_filter.h"
+
+//! Fused orientations kept for comparing with optical observations, about 330 ms at 190 Hz.
+#define WMR_CONTROLLER_ROT_HISTORY 64
 #include "util/u_device.h"
 #include "util/u_logging.h"
 #include "util/u_var.h"
@@ -171,8 +175,40 @@ struct wmr_controller_base
 	struct xrt_pose last_tracked_pose;
 	//! Last LED brightness report from optical controller tracking
 	uint16_t last_brightness_report;
+	//! Whether the fusion's tilt has been set from the accelerometer yet.
+	bool tilt_initialized;
+	//! Optical observations ignored because their orientation disagrees with the IMU (wrong matches).
+	uint64_t implausible_observation_count;
 	//! debug boolean - enable yaw updates
 	bool update_yaw_from_optical;
+	//! Fraction of the optical yaw error corrected per accepted observation, once aligned.
+	float yaw_gain;
+	//! Whether the fusion yaw has been aligned with the optical tracking yet.
+	bool yaw_aligned;
+	//! Observations in a row with a large, consistent yaw error, to realign after.
+	uint32_t yaw_far_count;
+	//! Yaw error of the previous observation in that run, radians.
+	float yaw_far_last;
+	/*!
+	 * Recent fused orientations, so optical observations (from camera frames tens of ms old) are
+	 * compared with the orientation at their frame time. Protected by data_lock.
+	 */
+	struct
+	{
+		int64_t timestamp_ns;
+		struct xrt_quat rot;
+	} rot_history[WMR_CONTROLLER_ROT_HISTORY];
+	uint32_t rot_history_next;
+
+	/*!
+	 * Fuses the optical positions with the IMU, so the position is smooth and keeps moving
+	 * between observations. Protected by data_lock.
+	 */
+	struct m_imu_position_filter position_filter;
+	//! debug boolean - report the filtered position instead of the last observed one
+	bool use_position_filter;
+	//! Raw IMU samples and observations are written here if WMR_CONTROLLER_RECORD is set.
+	FILE *record_file;
 
 	//!< Command counter for timesync and keep-alives. conn_lock
 	uint8_t cmd_counter;
