@@ -1244,12 +1244,19 @@ wmr_controller_base_push_brightness_update(struct xrt_device *xdev, uint8_t aver
 
 	wcb->last_brightness_report = average_brightness;
 
-	if (average_brightness > 70) {
-		wcb->timesync_led_intensity -= MIN(wcb->timesync_led_intensity, 3);
-	}
-
-	if (average_brightness < 30) {
+	if (average_brightness == 0) {
+		/* The tracker didn't find the controller at all. Brighter LEDs help when it is far away
+		 * or moving fast, but close to the headset at full intensity it may never be found, and
+		 * the intensity would stay there until it happens to move somewhere that works. So sweep
+		 * the whole range, starting over from dim once at the top. */
+		wcb->timesync_led_intensity += 20;
+		if (wcb->timesync_led_intensity > 399) {
+			wcb->timesync_led_intensity = 20;
+		}
+	} else if (average_brightness < 30) {
 		wcb->timesync_led_intensity = MIN(wcb->timesync_led_intensity + 10, 399);
+	} else if (average_brightness > 70) {
+		wcb->timesync_led_intensity -= MIN(wcb->timesync_led_intensity, 3);
 	}
 
 	os_mutex_unlock(&wcb->data_lock);
