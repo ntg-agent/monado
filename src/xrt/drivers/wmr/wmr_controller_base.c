@@ -36,11 +36,18 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
+
+/*!
+ * Directory to record each controller's IMU samples and optical observations to, as CSV, for
+ * tuning the position filter offline.
+ */
+DEBUG_GET_ONCE_OPTION(wmr_controller_record, "WMR_CONTROLLER_RECORD", NULL)
 
 #define WMR_TRACE(wcb, ...) U_LOG_XDEV_IFL_T(&wcb->base, wcb->log_level, __VA_ARGS__)
 #define WMR_TRACE_HEX(wcb, ...) U_LOG_XDEV_IFL_T_HEX(&wcb->base, wcb->log_level, __VA_ARGS__)
@@ -61,6 +68,57 @@ static inline struct wmr_controller_base *
 wmr_controller_base(struct xrt_device *p)
 {
 	return (struct wmr_controller_base *)p;
+}
+
+//! Rotate the fused orientation and its history by @p correction, in world space.
+static void
+rotate_fusion(struct wmr_controller_base *wcb, const struct xrt_quat *correction)
+{
+	struct xrt_quat corrected;
+	math_quat_rotate(correction, &wcb->fusion.rot, &corrected);
+	math_quat_normalize(&corrected);
+	wcb->fusion.rot = corrected;
+	for (uint32_t i = 0; i < WMR_CONTROLLER_ROT_HISTORY; i++) {
+		math_quat_rotate(correction, &wcb->rot_history[i].rot, &corrected);
+		wcb->rot_history[i].rot = corrected;
+	}
+}
+
+/*!
+ * The fusion starts level and corrects its tilt from gravity by only 3 degrees per second
+ * while the controller is still, so one lying on its side is tilted wrong for half a minute.
+ * The position filter would take that much of gravity as acceleration, run off and snap back
+ * over and over. Instead, set the tilt from the first sample that is close to pure gravity.
+ */
+static void
+init_tilt_from_accel(struct wmr_controller_base *wcb, const struct xrt_vec3 *accel, const struct xrt_vec3 *gyro)
+{
+	if (fabsf(m_vec3_len(*accel) - (float)MATH_GRAVITY_M_S2) > 0.5f || m_vec3_len(*gyro) > 0.3f) {
+		return; // Moving, wait for a calmer sample
+	}
+
+	// Rotate what the fusion thinks is up onto what the accelerometer says is up.
+	struct xrt_vec3 world_accel;
+	math_quat_rotate_vec3(&wcb->fusion.rot, accel, &world_accel);
+	world_accel = m_vec3_normalize(world_accel);
+	const struct xrt_vec3 up = {0, 1, 0};
+	struct xrt_vec3 axis;
+	math_vec3_cross(&world_accel, &up, &axis);
+	float angle = atan2f(m_vec3_len(axis), m_vec3_dot(world_accel, up));
+	if (m_vec3_len(axis) < 1e-6f) {
+		axis = (struct xrt_vec3){1, 0, 0}; // Upside down (or already level, with angle 0)
+	}
+	axis = m_vec3_normalize(axis);
+
+	struct xrt_quat correction;
+	math_quat_from_angle_vector(angle, &axis, &correction);
+	rotate_fusion(wcb, &correction);
+	wcb->fusion.grav.error_angle = 0; // Any pending correction was measured with the old tilt
+	wcb->tilt_initialized = true;
+	WMR_DEBUG(wcb, "Set the initial tilt from gravity: %f degrees", RAD_TO_DEG(angle));
+
+	// IMU samples already in the position filter used the wrong tilt.
+	m_imu_position_filter_reset(&wcb->position_filter);
 }
 
 /* Called from subclasses' handle_input_packet method, with data_lock */
@@ -102,6 +160,10 @@ wmr_controller_base_imu_sample(struct wmr_controller_base *wcb,
 		wcb->last_imu_device_timestamp_ns = 0;
 		wcb->last_angular_velocity = (struct xrt_vec3){0, 0, 0};
 		m_imu_3dof_init(&wcb->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
+		m_imu_position_filter_reset(&wcb->position_filter);
+		wcb->tilt_initialized = false;
+		wcb->yaw_aligned = false;
+		memset(wcb->rot_history, 0, sizeof(wcb->rot_history));
 		m_clock_windowed_skew_tracker_reset(wcb->hw2mono_clock);
 		m_clock_windowed_skew_tracker_push(wcb->hw2mono_clock, rx_mono_ns, now_hw_ns);
 		return;
@@ -116,6 +178,19 @@ wmr_controller_base_imu_sample(struct wmr_controller_base *wcb,
 	}
 
 	m_imu_3dof_update(&wcb->fusion, mono_time_ns, &imu_sample->acc, &imu_sample->gyro);
+	if (!wcb->tilt_initialized) {
+		init_tilt_from_accel(wcb, &imu_sample->acc, &imu_sample->gyro);
+	}
+	m_imu_position_filter_push_imu(&wcb->position_filter, mono_time_ns, &wcb->fusion.rot, &imu_sample->acc);
+	wcb->rot_history[wcb->rot_history_next].timestamp_ns = mono_time_ns;
+	wcb->rot_history[wcb->rot_history_next].rot = wcb->fusion.rot;
+	wcb->rot_history_next = (wcb->rot_history_next + 1) % WMR_CONTROLLER_ROT_HISTORY;
+	if (wcb->record_file != NULL) {
+		const struct xrt_quat *q = &wcb->fusion.rot;
+		fprintf(wcb->record_file, "imu,%" PRId64 ",%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%u\n", mono_time_ns,
+		        imu_sample->acc.x, imu_sample->acc.y, imu_sample->acc.z, imu_sample->gyro.x, imu_sample->gyro.y,
+		        imu_sample->gyro.z, q->x, q->y, q->z, q->w, wcb->timesync_led_intensity);
+	}
 	wcb->last_imu_timestamp_ns = mono_time_ns;
 	wcb->last_imu_device_timestamp_ns = now_hw_ns;
 	wcb->last_angular_velocity = imu_sample->gyro;
@@ -567,9 +642,25 @@ wmr_controller_base_get_tracked_pose(struct xrt_device *xdev,
 	relation.angular_velocity = wcb->last_angular_velocity;
 	last_imu_timestamp_ns = wcb->last_imu_timestamp_ns;
 
-	/* Only report a tracked position once optical tracking has observed the controller,
-	 * otherwise it is just the static default position above */
-	if (wcb->last_tracked_pose_ts != 0) {
+	struct xrt_vec3 filtered_position;
+	struct xrt_vec3 filtered_velocity;
+	int64_t filtered_ts;
+	bool filtered_tracked;
+	if (wcb->use_position_filter &&
+	    m_imu_position_filter_get(&wcb->position_filter, &wcb->fusion.rot, &wcb->last_angular_velocity,
+	                              &filtered_position, &filtered_velocity, &filtered_ts, &filtered_tracked)) {
+		/* The filtered position is for the last IMU sample, like the orientation, so the
+		 * prediction below moves both to the requested time. It is only tracked while
+		 * optical tracking keeps seeing the controller. */
+		relation.pose.position = filtered_position;
+		relation.linear_velocity = filtered_velocity;
+		relation.relation_flags |= XRT_SPACE_RELATION_POSITION_VALID_BIT;
+		if (filtered_tracked) {
+			relation.relation_flags |= XRT_SPACE_RELATION_POSITION_TRACKED_BIT;
+		}
+	} else if (wcb->last_tracked_pose_ts != 0) {
+		/* Only report a tracked position once optical tracking has observed the controller,
+		 * otherwise it is just the static default position above */
 		relation.pose.position = wcb->last_tracked_pose.position;
 		relation.relation_flags |= (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_POSITION_VALID_BIT |
 		                                                           XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
@@ -625,6 +716,11 @@ wmr_controller_base_deinit(struct wmr_controller_base *wcb)
 
 	// Destroy the fusion.
 	m_imu_3dof_close(&wcb->fusion);
+
+	if (wcb->record_file != NULL) {
+		fclose(wcb->record_file);
+		wcb->record_file = NULL;
+	}
 }
 
 /*
@@ -687,6 +783,21 @@ wmr_controller_base_init(struct wmr_controller_base *wcb,
 	wcb->thumbstick_deadzone = 0.15;
 
 	m_imu_3dof_init(&wcb->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
+	// The accelerometer offset is only known once the config has been read.
+	m_imu_position_filter_init(&wcb->position_filter, NULL, NULL);
+	wcb->use_position_filter = true;
+
+	const char *record_dir = debug_get_option_wmr_controller_record();
+	if (record_dir != NULL) {
+		char path[1024];
+		(void)snprintf(path, sizeof(path), "%s/wmr_%s_%lld.csv", record_dir,
+		               controller_type == XRT_DEVICE_TYPE_LEFT_HAND_CONTROLLER ? "left" : "right",
+		               (long long)time(NULL));
+		wcb->record_file = fopen(path, "w");
+		if (wcb->record_file == NULL) {
+			WMR_WARN(wcb, "Could not open %s for recording: %s", path, strerror(errno));
+		}
+	}
 
 	if (os_mutex_init(&wcb->conn_lock) != 0 || os_mutex_init(&wcb->data_lock) != 0) {
 		WMR_ERROR(wcb, "WMR Controller: Failed to init mutex!");
@@ -721,7 +832,12 @@ wmr_controller_base_init(struct wmr_controller_base *wcb,
 	// Announce the availabilty of the config for the tracker to retrieve
 	os_mutex_lock(&wcb->data_lock);
 	wcb->have_config = true;
+	wcb->position_filter.accel_offset = wcb->config.sensors.transforms.P_oxr_acc.position;
 	os_mutex_unlock(&wcb->data_lock);
+
+	WMR_DEBUG(wcb, "Accelerometer offset %f %f %f", wcb->config.sensors.transforms.P_oxr_acc.position.x,
+	          wcb->config.sensors.transforms.P_oxr_acc.position.y,
+	          wcb->config.sensors.transforms.P_oxr_acc.position.z);
 
 	/* Reset device time before controller outputs */
 	fw_cmd = WMR_CONTROLLER_FW_CMD_INIT(0x06, 0x21, 0x00, 0x00);
@@ -737,6 +853,7 @@ wmr_controller_base_init(struct wmr_controller_base *wcb,
 	wmr_controller_send_bytes(wcb, wmr_controller_imu_on_cmd, sizeof(wmr_controller_imu_on_cmd));
 
 	wcb->update_yaw_from_optical = true;
+	wcb->yaw_gain = 0.02f;
 
 	wcb->timesync_counter = 2;
 	wcb->timesync_led_intensity = 200;
@@ -766,6 +883,13 @@ wmr_controller_base_init(struct wmr_controller_base *wcb,
 	u_var_add_pose(wcb, &wcb->last_tracked_pose, "Last observed pose");
 	u_var_add_ro_i64(wcb, &wcb->last_tracked_pose_ts, "Last observed pose TS");
 	u_var_add_bool(wcb, &wcb->update_yaw_from_optical, "Update yaw using tracking");
+	u_var_add_f32(wcb, &wcb->yaw_gain, "Yaw correction per observation");
+	u_var_add_bool(wcb, &wcb->yaw_aligned, "Yaw aligned with tracking");
+	u_var_add_ro_u64(wcb, &wcb->implausible_observation_count, "Observations ignored for their orientation");
+	u_var_add_bool(wcb, &wcb->use_position_filter, "Filter position with IMU");
+	u_var_add_ro_u64(wcb, &wcb->position_filter.accepted_count, "Filter: accepted observations");
+	u_var_add_ro_u64(wcb, &wcb->position_filter.rejected_count, "Filter: rejected observations");
+	u_var_add_ro_u64(wcb, &wcb->position_filter.reset_count, "Filter: resets");
 	u_var_add_ro_u16(wcb, &wcb->last_brightness_report, "Last observed average LED brightness");
 
 	u_var_add_gui_header(wcb, NULL, "LED Sync");
@@ -850,7 +974,6 @@ wmr_controller_base_send_timesync(struct wmr_controller_base *wcb)
 	if (conn != NULL) {
 		/* Each timesync_time_offset step is 0.5ms */
 		uint64_t time_offset_us = wcb->timesync_time_offset * 500;
-
 		/* Timesync counter counts 1/2/3 in a loop per packet */
 		uint8_t ts_ctr = wcb->timesync_counter++;
 		if (wcb->timesync_counter == 4) {
@@ -1121,15 +1244,124 @@ wmr_controller_base_push_brightness_update(struct xrt_device *xdev, uint8_t aver
 
 	wcb->last_brightness_report = average_brightness;
 
-	if (average_brightness > 70) {
+	if (average_brightness == 0) {
+		/* The tracker didn't find the controller at all. Brighter LEDs help when it is far away
+		 * or moving fast, but close to the headset at full intensity it may never be found, and
+		 * the intensity would stay there until it happens to move somewhere that works. So sweep
+		 * the whole range, starting over from dim once at the top. */
+		wcb->timesync_led_intensity += 20;
+		if (wcb->timesync_led_intensity > 399) {
+			wcb->timesync_led_intensity = 20;
+		}
+	} else if (average_brightness < 30) {
+		wcb->timesync_led_intensity = MIN(wcb->timesync_led_intensity + 10, 399);
+	} else if (average_brightness > 70) {
 		wcb->timesync_led_intensity -= MIN(wcb->timesync_led_intensity, 3);
 	}
 
-	if (average_brightness < 30) {
-		wcb->timesync_led_intensity = MIN(wcb->timesync_led_intensity + 10, 399);
+	os_mutex_unlock(&wcb->data_lock);
+}
+
+//! The fused orientation closest to @p timestamp_ns, or the current one if none is recorded.
+static struct xrt_quat
+fused_rot_at(const struct wmr_controller_base *wcb, int64_t timestamp_ns)
+{
+	struct xrt_quat best = wcb->fusion.rot;
+	int64_t best_diff = INT64_MAX;
+	for (uint32_t i = 0; i < WMR_CONTROLLER_ROT_HISTORY; i++) {
+		if (wcb->rot_history[i].timestamp_ns == 0) {
+			continue;
+		}
+		int64_t diff = llabs(wcb->rot_history[i].timestamp_ns - timestamp_ns);
+		if (diff < best_diff) {
+			best_diff = diff;
+			best = wcb->rot_history[i].rot;
+		}
+	}
+	return best;
+}
+
+/*!
+ * Split the rotation from the fused orientation to an optical one into tilt (the angle between
+ * their up directions) and yaw (rotation about gravity), in radians.
+ *
+ * The observation is compared with the fused orientation at its camera frame's time: it arrives
+ * tens of milliseconds late, and comparing with the current orientation would see any rotation
+ * since then as error.
+ */
+static void
+optical_rotation_error(const struct wmr_controller_base *wcb,
+                       int64_t frame_mono_ns,
+                       const struct xrt_quat *optical,
+                       float *out_tilt,
+                       float *out_yaw)
+{
+	// The rotation from the fused orientation to the optical one, in world space.
+	struct xrt_quat fused = fused_rot_at(wcb, frame_mono_ns);
+	struct xrt_quat fused_inv, error, swing, twist;
+	math_quat_invert(&fused, &fused_inv);
+	math_quat_rotate(optical, &fused_inv, &error);
+
+	const struct xrt_vec3 up = {0, 1, 0};
+	math_quat_decompose_swing_twist(&error, &up, &swing, &twist);
+	float yaw = 2.0f * atan2f(twist.y, twist.w);
+	if (yaw > M_PI) {
+		yaw -= 2.0f * M_PI;
+	} else if (yaw < -M_PI) {
+		yaw += 2.0f * M_PI;
+	}
+	*out_yaw = yaw;
+	*out_tilt = 2.0f * acosf(fminf(1.0f, fabsf(swing.w)));
+}
+
+/*!
+ * Track how long the yaw error has stayed large and about the same, which means the fusion's yaw
+ * is what's wrong (after a reset, or lost while spinning fast), not the observations.
+ *
+ * @return true once that has lasted about a second.
+ */
+static bool
+yaw_is_off(struct wmr_controller_base *wcb, float yaw)
+{
+	if (fabsf(yaw) > DEG_TO_RAD(20) &&
+	    (wcb->yaw_far_count == 0 || fabsf(yaw - wcb->yaw_far_last) < DEG_TO_RAD(10))) {
+		wcb->yaw_far_count++;
+		wcb->yaw_far_last = yaw;
+	} else {
+		wcb->yaw_far_count = 0;
+	}
+	if (wcb->yaw_far_count < 30) {
+		return false;
+	}
+	wcb->yaw_far_count = 0;
+	return true;
+}
+
+/*!
+ * Pull the yaw of the IMU fusion towards an optical observation, @p yaw radians away. The IMU
+ * keeps pitch and roll right from gravity but its yaw drifts slowly; the optical orientation has
+ * no drift but is noisy, by a degree or more from frame to frame. So once aligned, correct only
+ * a small part of the error per observation, which averages the noise over about a second. The
+ * first observation aligns at once.
+ */
+static void
+correct_yaw_from_optical(struct wmr_controller_base *wcb, float yaw)
+{
+	float step;
+	if (!wcb->yaw_aligned) {
+		step = yaw;
+		wcb->yaw_aligned = true;
+		WMR_DEBUG(wcb, "Aligning yaw with optical tracking: %f degrees", RAD_TO_DEG(yaw));
+	} else {
+		const float max_step = DEG_TO_RAD(0.25f);
+		step = CLAMP(yaw * wcb->yaw_gain, -max_step, max_step);
 	}
 
-	os_mutex_unlock(&wcb->data_lock);
+	// Rotate the history too, so the next observation is compared with corrected orientations.
+	const struct xrt_vec3 up = {0, 1, 0};
+	struct xrt_quat correction;
+	math_quat_from_angle_vector(step, &up, &correction);
+	rotate_fusion(wcb, &correction);
 }
 
 static void
@@ -1138,50 +1370,44 @@ wmr_controller_base_push_observed_pose(struct xrt_device *xdev, timepoint_ns fra
 	struct wmr_controller_base *wcb = (struct wmr_controller_base *)(xdev);
 	os_mutex_lock(&wcb->data_lock);
 
-	wcb->last_tracked_pose_ts = frame_mono_ns;
-	wcb->last_tracked_pose = *pose;
+	float tilt_error, yaw_error;
+	optical_rotation_error(wcb, frame_mono_ns, &pose->orientation, &tilt_error, &yaw_error);
 
-	if (wcb->update_yaw_from_optical) {
-#if 1
-		// Apply 5% of observed orientation yaw to 3dof fusion
-		// FIXME: Do better
-		struct xrt_quat delta;
-		math_quat_unrotate(&wcb->fusion.rot, &pose->orientation, &delta);
-		delta.x = delta.z = 0.0; // We only want Yaw
+	/* The IMU knows which way is down to within a few degrees, and once aligned its yaw stays
+	 * within a few degrees of the optical tracking too. A pose that disagrees by much more is a
+	 * wrong match of the LEDs, for example onto the other controller when the two are close.
+	 * The tracker can stick to one for half a second, long enough to drag the position along. */
+	const float max_error = DEG_TO_RAD(20);
+	bool tilt_ok = !wcb->tilt_initialized || tilt_error < max_error;
+	bool yaw_ok = !wcb->yaw_aligned || fabsf(yaw_error) < max_error;
+	if (tilt_ok && yaw_is_off(wcb, yaw_error)) {
+		WMR_DEBUG(wcb, "Yaw has been off by %f degrees for a while, realigning", RAD_TO_DEG(yaw_error));
+		wcb->yaw_aligned = false;
+		yaw_ok = true;
+	}
 
-		if (fabs(delta.y) > sin(DEG_TO_RAD(5)) / 2) {
-			delta.y = sin(0.10 * asinf(delta.y)); // 10% correction
-			math_quat_normalize(&delta);
+	bool used = false;
+	if (tilt_ok && yaw_ok) {
+		wcb->last_tracked_pose_ts = frame_mono_ns;
+		wcb->last_tracked_pose = *pose;
 
-			struct xrt_quat prev = wcb->fusion.rot;
-			math_quat_rotate(&wcb->fusion.rot, &delta, &wcb->fusion.rot);
+		/* The filter uses the orientation to find the accelerometer, 9 cm from the origin. The
+		 * IMU orientation is much less noisy than the optical one, and yaw-corrected by it. */
+		struct xrt_pose filter_pose = {wcb->fusion.rot, pose->position};
+		used = m_imu_position_filter_push_observation(&wcb->position_filter, frame_mono_ns, &filter_pose);
+	} else {
+		wcb->implausible_observation_count++;
+	}
 
-			if (wcb->log_level <= U_LOGGING_DEBUG) {
-				struct xrt_quat post_delta;
-				math_quat_unrotate(&wcb->fusion.rot, &pose->orientation, &post_delta);
-				post_delta.x = post_delta.z = 0.0;  // We only want Yaw
-				post_delta.y = 0.10 * post_delta.y; // 5%
-				math_quat_normalize(&post_delta);
+	if (wcb->update_yaw_from_optical && used) {
+		correct_yaw_from_optical(wcb, yaw_error);
+	}
 
-				WMR_DEBUG(wcb,
-				          "Applying delta yaw rotation of %f degrees delta quat %f,%f,%f,%f from "
-				          "%f,%f,%f,%f to "
-				          "%f,%f,%f,%f. delta after correction: %f,%f,%f,%f",
-				          RAD_TO_DEG(2 * asinf(delta.y)), delta.x, delta.y, delta.z, delta.w, prev.x,
-				          prev.y, prev.z, prev.w, wcb->fusion.rot.x, wcb->fusion.rot.y,
-				          wcb->fusion.rot.z, wcb->fusion.rot.w, post_delta.x, post_delta.y,
-				          post_delta.z, post_delta.w);
-			}
-		} else {
-			math_quat_normalize(&delta);
-
-			WMR_DEBUG(wcb, "Applying full yaw correction of %f degrees. delta quat %f,%f,%f,%f",
-			          RAD_TO_DEG(2 * asinf(delta.y)), delta.x, delta.y, delta.z, delta.w);
-			math_quat_rotate(&wcb->fusion.rot, &delta, &wcb->fusion.rot);
-		}
-#else
-		wcb->fusion.rot = pose->orientation;
-#endif
+	if (wcb->record_file != NULL) {
+		fprintf(wcb->record_file, "obs,%" PRId64 ",%f,%f,%f,%f,%f,%f,%f,%d,%f,%f\n", frame_mono_ns,
+		        pose->position.x, pose->position.y, pose->position.z, pose->orientation.x, pose->orientation.y,
+		        pose->orientation.z, pose->orientation.w, used ? 1 : 0, RAD_TO_DEG(yaw_error),
+		        RAD_TO_DEG(tilt_error));
 	}
 
 	os_mutex_unlock(&wcb->data_lock);

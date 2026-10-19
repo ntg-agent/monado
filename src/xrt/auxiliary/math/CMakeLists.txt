@@ -18,6 +18,8 @@ add_library(
 	m_hash.cpp
 	m_imu_3dof.c
 	m_imu_3dof.h
+	m_imu_position_filter.c
+	m_imu_position_filter.h
 	m_imu_pre.c
 	m_imu_pre.h
 	m_lowpass_float.cpp

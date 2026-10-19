@@ -10,6 +10,7 @@ set(tests
     tests_glue_device
     tests_history_buf
     tests_id_ringbuffer
+    tests_imu_position_filter
     tests_json
     tests_lowpass_float
     tests_lowpass_integer
@@ -67,6 +68,7 @@ target_link_libraries(tests_quatexpmap PRIVATE aux_math)
 target_link_libraries(tests_rational PRIVATE aux_math)
 target_link_libraries(tests_relation_chain PRIVATE aux_math)
 target_link_libraries(tests_pose PRIVATE aux_math)
+target_link_libraries(tests_imu_position_filter PRIVATE aux_math)
 target_link_libraries(tests_quat_change_of_basis PRIVATE aux_math)
 target_link_libraries(tests_quat_swing_twist PRIVATE aux_math)
 target_link_libraries(tests_vec3_angle PRIVATE aux_math)
