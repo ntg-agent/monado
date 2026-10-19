@@ -433,6 +433,10 @@ wmr_controller_og_create(struct wmr_controller_connection *conn,
 
 	if (pid == ODYSSEY_CONTROLLER_PID) {
 		wcb->base.name = XRT_DEVICE_SAMSUNG_ODYSSEY_CONTROLLER;
+		/* Odyssey controllers flash their LEDs too early for the controller camera frames with no
+		 * offset: on an Odyssey+ the cameras only see the LEDs with an offset of 0.1 - 0.7 ms
+		 * (about 16 blobs per camera, vs 1 - 2 at 0 ms and none from 0.8 ms on). */
+		wcb->timesync_time_offset = 1; // 0.5 ms
 		if (controller_type == XRT_DEVICE_TYPE_LEFT_HAND_CONTROLLER) {
 			wcb->P_aim = P_odyssey_left_aim;
 			wcb->P_aim_grip = P_odyssey_left_aim_grip;
